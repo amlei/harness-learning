@@ -1,0 +1,37 @@
+/*
+ * Harness Learning — root directory data
+ * ─────────────────────────────────────────
+ * Used ONLY by the root index.html (the directory / front door).
+ * Each project owns its OWN reader page (source/<project>/index.html) with its
+ * OWN inline manifest + theme — so projects are fully isolated from each other.
+ *
+ * THEMES here carries only the preview fields the directory cards need.
+ * Page-level theming lives in reader/reader.css as :root[data-theme="…"].
+ *
+ * Add a project: drop source/<id>/index.html, then add an entry here.
+ * Add a paper:   drop paper/<id>/index.html (+ .md), then add an entry here.
+ */
+window.CATALOG = {
+
+  THEMES: {
+    atelier:    { accent:'#8a2e2e', mark:'❦', display:'EB Garamond',         character:'parchment · oxblood · blog serif' },
+    hermes:     { accent:'#d4a45a', mark:'☤', display:'Fraunces',          character:'antique gold · editorial serif' },
+    periodical: { accent:'#8290b8', mark:'§',  display:'Spectral',         character:'slate indigo · periodical serif' },
+    technical:  { accent:'#c7b08a', mark:'⌘', display:'Bricolage Grotesque', character:'graphite · utilitarian grotesque' },
+  },
+
+  source: [
+    {
+      id:'hermes', title:'Hermes Agent', theme:'hermes',
+      tagline:'A self-improving AI agent — dissected.',
+      blurb:'约 80 万行的自我改进型 AI 代理框架。不讲"怎么用"，而是追问"它是如何被造出来的"——同步循环与异步桥、自注册工具系统、SQLite+FTS5 会话库、过程记忆技能与 Curator、七大终端后端、双向 MCP、二十余平台消息网关。',
+      author:'Amlei', updated:'2026-08-08',
+      statsLabel:'15 篇 · ~330KB · 25+ 图',
+    },
+    /* ─ add the next project here (and create source/<id>/index.html) ─ */
+  ],
+
+  paper: [
+    /* ─ add a paper here (and create paper/<id>/index.html) ─ */
+  ],
+};

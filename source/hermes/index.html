@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="hermes">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hermes Agent · 源码剖析 — Harness Learning</title>
+<meta name="description" content="Hermes Agent 源码实现剖析：设计思想、实现机制与实现原理。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23fcfcfa'/%3E%3Ctext x='16' y='24' font-size='24' text-anchor='middle' fill='%23171717'%3E%E2%98%A4%3C/text%3E%3C/svg%3E" />
+
+<!-- rendering libs -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css" />
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+
+<!-- shared design system + engine -->
+<link rel="stylesheet" href="../../reader/reader.css" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+<div class="scrim" id="scrim"></div>
+
+<aside class="spine" id="spine">
+  <a class="brand" href="./">
+    <span class="cad">☤</span>
+    <span class="bt"><b>Hermes Agent</b><span>source monograph</span></span>
+  </a>
+  <a class="back-link" href="../../">← atelier</a>
+
+  <div class="div" id="volDiv"></div>
+  <p class="label" id="volLabel">This volume</p>
+  <div id="volToc"></div>
+
+  <div class="foot">
+    作者 <a href="https://github.com/amlei" target="_blank" rel="noopener">Amlei</a> · 2026-08-08<br>
+    <a href="https://github.com/NousResearch/hermes-agent" target="_blank" rel="noopener">↗ upstream repo</a><br>
+    <a href="../../">← back to atelier</a>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar" id="topbar">
+    <button class="menu-btn" id="menuBtn">☰ index</button>
+    <a href="./"><span>☤</span> Hermes</a>
+    <span class="sep" id="crumbSep" style="display:none">/</span>
+    <span id="crumb"></span>
+    <div class="progress"><i id="progBar"></i></div>
+  </div>
+  <div id="view"></div>
+</div>
+
+<!-- this project's manifest — fully self-contained -->
+<script>
+window.READER = {
+  kind: 'source',
+  home: {
+    title: 'Hermes Agent',
+    mark: '☤',
+    blurb: '约 80 万行的自我改进型 AI 代理框架。不讲"怎么用"，而是追问"它是如何被造出来的"——同步循环与异步桥、自注册工具系统、SQLite+FTS5 会话库、过程记忆技能与 Curator、七大终端后端、双向 MCP、二十余平台消息网关。',
+    author: 'Amlei', updated: '2026-08-08',
+    repo: 'https://github.com/NousResearch/hermes-agent',
+    statsLabel: '15 篇 · ~330KB · 25+ 图',
+  },
+  parts: [
+    ['part-00-preface','00','序言与总目录','阅读地图、写作立场、贯穿全书的六条设计主线。',['前言','目录','主线'],'~9k'],
+    ['part-01-overview','01','总览与设计哲学','项目定位、八条核心设计决策、整体架构与代码地图。',['架构','决策','依赖链'],'~17k'],
+    ['part-02-core-loop','02','核心代理循环','同步循环＋异步桥、系统提示缓存纪律、上下文压缩、四档中断。',['AIAgent','压缩','中断'],'~19k'],
+    ['part-03-tools','03','工具系统','自注册 registry、发现与分发、toolset 曝光、跨 provider schema 修复。',['registry','dispatch','toolset'],'~17k'],
+    ['part-04-state','04','状态与会话持久化','SQLite＋FTS5 三索引、非破坏式压缩、WAL 并发、压缩链。',['SessionDB','FTS5','WAL'],'~14k'],
+    ['part-05-skills','05','技能系统与 Curator','过程记忆、Footprint Ladder、自治状态机、闭环学习。',['skills','curator','provenance'],'~15k'],
+    ['part-06-terminal','06','终端执行与多后端','七大执行后端、会话快照、三层危险命令审批防御。',['terminal','backends','approval'],'~14k'],
+    ['part-07-mcp','07','MCP 集成','双向协议、注册桥接、OAuth 三层、父死亡看门狗。',['MCP','OAuth','watchdog'],'~15k'],
+    ['part-08-gateway','08','消息网关与平台适配','两道消息守卫、三十二个适配器、跨平台会话连续。',['gateway','adapters','guards'],'~16k'],
+    ['part-09-cli-tui','09','CLI、TUI 与仪表盘','中央命令注册表、嵌入真实 TUI、四种聊天表面。',['CLI','TUI','dashboard'],'~17k'],
+    ['part-10-plugins','10','插件体系与提供者','三套并行发现系统、ProviderProfile、ctx 生命周期 API。',['plugins','providers','hooks'],'~15k'],
+    ['part-11-orchestration','11','委派、Cron 与 Kanban','持久性准则、非活动超时、跨 worker 协作看板。',['delegation','cron','kanban'],'~17k'],
+    ['part-12-config-security','12','配置、Profile 与安全','OS 是唯一边界、三路加载器、fail-closed 纵深防御。',['config','profile','security'],'~16k'],
+    ['part-13-research-deploy','13','研究、记忆与部署','运行时即训练时、Honcho 辩证建模、跨平台打包部署。',['batch','memory','deploy'],'~24k'],
+    ['part-14-feature-tools','14','关键功能工具的实现','内置浏览器与预览、网页搜索/抓取、视觉、图像/视频生成、语音 TTS/STT 的实现机制。',['browser','preview','vision','media','voice'],'~9k'],
+  ],
+};
+</script>
+<script src="../../reader/reader.js"></script>
+</body>
+</html>

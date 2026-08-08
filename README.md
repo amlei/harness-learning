@@ -1,33 +1,99 @@
 # Harness Learning
 
-个人学习 Hermes Agent 的记录仓库，包含源码实现剖析笔记与文章整理。
+> 一座私人源码工坊：按**每个开源仓库自身的风格**排印的源码实现剖析，外加文章整理。
+> 不是使用手册——而是反过来追问"这套系统是如何被造出来的"。
 
-## 目录结构
+📖 **[在线阅读](https://amlei.github.io/harness-learning/)**　·　启用 GitHub Pages（Settings → Pages → Branch: `main` / root）后即可访问。
+
+---
+
+## 架构：每卷一个独立页面
 
 ```
 harness-learning/
-├── source/   # 源码实现剖析笔记（按功能分章，书式）
-├── paper/    # 博客文章、论文与技术资料整理
-└── skill/    # study-notes skill：把任意来源的学习内容整理成书式笔记
+├── index.html              # 主仓库首页 = 目录（本仓库自己的风格），只做导航
+├── catalog.js              # 目录数据：项目 / 文章清单（仅元数据）
+├── reader/
+│   ├── reader.css          # 共享设计系统（主题用 :root[data-theme] 表达）
+│   └── reader.js           # 共享阅读器引擎
+├── source/
+│   └── hermes/
+│       ├── index.html      # ← Hermes 自己的阅读器（金色主题，独立、互不影响）
+│       └── part-*.md
+└── paper/
+    └── _template.html      # 新增文章时复制此模板
 ```
 
-### source/
+**核心约定**：
 
-源码实现剖析笔记。不是使用手册，而是反过来追问"这套系统是如何被造出来的"——以第三人称撰写，
-按功能领域分部、分章，复杂关系用 Mermaid、简单内容用 ASCII。
+- **主仓库 `index.html` 只作目录**，用本仓库自己的风格（verdigris patina）。它列出所有卷与文章，链接到各自的阅读器，本身不渲染任何正文。
+- **每个 project 有自己独立的 `index.html`**（`source/<project>/index.html`）。它自带主题与目录清单，读取本目录下的 `part-*.md`，**不依赖其它 project，也不依赖主仓库的 `catalog.js`**。这样各卷互不影响，新增一卷也不会动到别的卷或主首页的渲染逻辑。
+- 共享的只是**引擎与设计系统**（`reader/reader.css` + `reader/reader.js`）——这是基础设施，升级它等于升级"印刷机"，对所有卷一视同仁。
 
-👉 从 [source/README.md（目录）](./source/README.md) 开始阅读。
+---
 
-### paper/
+## 排印规则（house rule）
 
-Hermes 相关的博客文章、论文、技术资料的学习与整理记录。
+每个源码卷的视觉主题——字体、配色、印记——需**呼应其上游仓库本身的气质**，而非套统一文档皮肤。
 
-### skill/
+主题在 `reader/reader.css` 里以 `:root[data-theme="…"]` 定义一次，由各卷在自己的 `<html data-theme="…">` 上引用。纯 CSS、无闪烁、无 JS 主题切换。
 
-[`study-notes`](./skill/study-notes/SKILL.md)——一个来源无关的 skill，把任意学习内容
-（opencode 会话、聊天记录、文档、文章等）整理成第三人称、按功能分章的实现剖析书。本仓库的 `source/`
-即用此 skill 从 opencode 会话整理而来。
+| 仓库气质 | 主题 id | 配色 / 字体 |
+|----------|---------|-------------|
+| 工坊／首页 | `atelier` | 铜绿 verdigris · Fraunces/Newsreader |
+| 编辑／产品向（如 Hermes） | `hermes` | 古金 · Fraunces/Newsreader |
+| 论文／文章 | `periodical` | 冷靛 · Spectral |
+| 系统／内核／Go | `technical` | 石墨 · Bricolage Grotesque/IBM Plex Sans |
 
-## 说明
+> 要引入新主题：在 `reader/reader.css` 加一个 `:root[data-theme="x"]{…}` 块，并在 `catalog.js` 的 `THEMES` 里加同名的预览字段（accent / mark / display / character），供目录卡片使用。
 
-本仓库为个人学习用途，持续更新中。
+## 写作标准
+
+- 第三人称客观视角，覆盖设计思想、实现机制、实现原理。
+- 关键机制标注 `文件:行号`。
+- 每个 `part-XX-*.md` 首行 `# 第N篇　标题`，次行 `*作者：Amlei　·　更新时间：YYYY-MM-DD*`。
+- 与既有文档的出入显式标注为勘误。
+
+---
+
+## 如何新增内容
+
+### 新增一卷源码
+
+1. 建目录 `source/<project>/`，写入 `part-00-…md` … `part-NN-…md`。
+2. 复制 `source/hermes/index.html` 为 `source/<project>/index.html`，改三处：
+   - `<html data-theme="…">` 选一个呼应该仓库气质的主题；
+   - `<title>` / favicon 色 / spine 里的品牌字与印记；
+   - `<script>window.READER = { home:{…}, parts:[…] }</script>` 换成本卷元数据与目录。
+3. 在 `catalog.js` 的 `source` 数组追加一条（供首页目录卡片显示）。
+4. 完成。该卷与其它卷完全隔离。
+
+### 新增一篇文章
+
+1. 建 `paper/<slug>/`，写入 `<slug>.md`。
+2. 复制 `paper/_template.html` 为 `paper/<slug>/index.html`，把 `window.READER` 的 `kind` 设为 `'paper'`、`paper.file` 指向 `<slug>`、填好 `home`。
+3. 在 `catalog.js` 的 `paper` 数组追加一条。
+4. 完成。
+
+> 两种情况都**不需要改 `index.html`（主首页）或 `reader/*`**。
+
+---
+
+## 本地预览
+
+阅读器用 `fetch` 加载 markdown，需 http（不能直接双击 html）：
+
+```bash
+cd harness-learning
+python3 -m http.server 8000
+# http://localhost:8000/            目录
+# http://localhost:8000/source/hermes/   Hermes 阅读器
+```
+
+## 部署
+
+提交到 `main`，GitHub Pages 设为 `main / root`，访问 `https://amlei.github.io/harness-learning/`。
+
+---
+
+个人学习用途，持续更新中。

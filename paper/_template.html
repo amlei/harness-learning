@@ -1,0 +1,72 @@
+<!doctype html>
+<!--
+  Harness Learning — paper reader template
+  ─────────────────────────────────────────
+  To publish a paper:
+    1. copy this folder to paper/<your-slug>/  (or copy this file into paper/<slug>/)
+    2. write your markdown as <your-slug>.md next to this file
+    3. edit window.READER below (id / file / home.title / …)
+    4. add an entry to /catalog.js → paper:[]
+  Theme: change <html data-theme="…"> (periodical | atelier | hermes | technical).
+-->
+<html lang="zh-CN" data-theme="periodical">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>PAPER TITLE — Harness Learning</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%2315110c'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%238290b8'%3E%C2%A7%3C/text%3E%3C/svg%3E" />
+
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css" />
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+
+<link rel="stylesheet" href="../../reader/reader.css" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Spectral:ital,wght@0,400;0,500;0,600;1,400&family=Fraunces:ital,opsz,wght@0,9..144,300;0,9..144,500;1,9..144,400&family=JetBrains+Mono:wght@400;500&family=Noto+Serif+SC:wght@400;600&display=swap" rel="stylesheet" />
+</head>
+<body>
+<div class="scrim" id="scrim"></div>
+
+<aside class="spine" id="spine">
+  <a class="brand" href="./">
+    <span class="cad">§</span>
+    <span class="bt"><b>PAPER TITLE</b><span>paper</span></span>
+  </a>
+  <a class="back-link" href="../../">← atelier</a>
+  <div class="foot">
+    作者 <a href="https://github.com/amlei" target="_blank" rel="noopener">Amlei</a><br>
+    <a href="../../">← back to atelier</a>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar" id="topbar">
+    <button class="menu-btn" id="menuBtn">☰ index</button>
+    <a href="./"><span>§</span> paper</a>
+    <span class="sep" id="crumbSep" style="display:none">/</span>
+    <span id="crumb"></span>
+    <div class="progress"><i id="progBar"></i></div>
+  </div>
+  <div id="view"></div>
+</div>
+
+<script>
+window.READER = {
+  kind: 'paper',
+  home: {
+    title: 'PAPER TITLE',          // ← edit
+    mark: '§',
+    blurb: '',                      // ← shown only if used; reader ignores for papers
+    author: 'Amlei', updated: 'YYYY-MM-DD',
+    repo: '',                       // ← optional source link
+  },
+  paper: { file: 'CHANGE-ME' },     // ← the .md filename (no extension), next to this file
+};
+</script>
+<script src="../../reader/reader.js"></script>
+</body>
+</html>
