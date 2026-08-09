@@ -10,7 +10,7 @@
 
 ## 第 1 章　设计坐标：在 compose 之上长出自主性
 
-adk 的一个关键但容易被忽视的事实是：**它并未另起炉灶实现执行引擎，而是把 agent 内部表达成一张 `compose.Graph`**。这一点在 `adk/react.go:354` 的 `newReact` 中暴露无遗——ReAct 循环就是一张由 `Init`/`ChatModel`/`CancelCheck`/`ToolNode`/`AfterToolCalls` 等节点和一条回边构成的 compose 图（见[第 4 章](part-09-adk.md)）。因此 adk 与 compose 的关系不是"替代"，而是"复用"：compose 提供流式编排、状态注入（[第六篇](part-06-state.md)）、中断/checkpoint（[第七篇](part-07-tools-interrupt.md)）、回调切面（[第八篇](part-08-callbacks.md)）等基础设施，adk 在其上贴出 agent 的语义。
+adk 的一个关键但容易被忽视的事实是：**它并未另起炉灶实现执行引擎，而是把 agent 内部表达成一张 `compose.Graph`**。这一点在 `adk/react.go:354` 的 `newReact` 中暴露无遗——ReAct 循环就是一张由 `Init`/`ChatModel`/`CancelCheck`/`ToolNode`/`AfterToolCalls` 等节点和一条回边构成的 compose 图（见[第 4 章](part-09-adk.md#第4章)）。因此 adk 与 compose 的关系不是"替代"，而是"复用"：compose 提供流式编排、状态注入（[第六篇](part-06-state.md)）、中断/checkpoint（[第七篇](part-07-tools-interrupt.md)）、回调切面（[第八篇](part-08-callbacks.md)）等基础设施，adk 在其上贴出 agent 的语义。
 
 与 Google ADK、LangChain 的 agent 相比，adk 的差异在于：(1) 交互范式是 **pull-based 事件迭代器**（`AsyncIterator`，`adk/utils.go:31`），而非回调或单个返回值；(2) **中断/恢复是一等公民**，与 compose 的 `core.Interrupt` + checkpoint 深度耦合；(3) **取消有完整的安全点状态机**（`adk/cancel.go`），支持"模型调用后"/"工具调用后"等安全点而非粗暴 `ctx.Done()`。
 
@@ -75,7 +75,7 @@ type TypedAgentEvent[M MessageType] struct {
 
 `flowAgent`（`adk/flow.go:42`）内嵌 `Agent`，并叠加上下文初始化、回调、RunPath 记录、取消上下文、转移编排、历史重写。它的 `Run`（`flow.go:352`）做的事：
 
-1. `initRunCtx` 建运行期上下文，`AppendAddressSegment(ctx, AddressSegmentAgent, agentName)` 给地址加段（中断恢复用，见[第七篇·第 2 章](part-07-tools-interrupt.md)）。
+1. `initRunCtx` 建运行期上下文，`AppendAddressSegment(ctx, AddressSegmentAgent, agentName)` 给地址加段（中断恢复用，见[第七篇·第 2 章](part-07-tools-interrupt.md#第2章)）。
 2. `genAgentInput`（`flow.go:275`）把 session 里已积累的事件经 `historyRewriter` 重写成消息序列——adk 不存"消息历史"，而是存 AgentEvent 包装（`agentEventWrapper`），用时再物化。默认重写器会把别的 agent 说的话改写成 "For context: [name] said: ..." 的 User 消息，避免角色混乱。
 3. `callbacks.OnStart` 上报 `AgentCallbackInput`（见[第八篇·第 3.5 节](part-08-callbacks.md)），再跑底层 agent，起一个 goroutine 转发事件并维护 `lastAction`。
 4. 两条精巧规则（`flow.go:509`）：RunPath 仅置一次；**只有 RunPath 精确匹配本 agent 的事件才记入 session、才影响父控制流**——这防止父 agent 误把子/工具内部事件当成自己的终止信号。
@@ -113,7 +113,7 @@ ReAct 循环在四种情况下结束：(1) 模型不再产出 tool_call（最终
 
 ### 4.3　状态 typedState
 
-ReAct 图用 `WithGenLocalState` 注入一个 `State`（见[第六篇·第 1 章](part-06-state.md)）：`Messages`（对话历史）、`Extra map[string]any`（用户 K/V，中间件 `SetRunLocalValue` 落点）、`ToolInfos`/`DeferredToolInfos`（给模型的工具清单，可被中间件改写，见[第十篇](part-10-middlewares.md)）、`RemainingIterations`、`ReturnDirectlyToolCallID`、`ToolMsgIDs`（工具名+callID→消息 ID 的映射，保证事件消息与 state 消息 ID 一致）。这个 state 在 checkpoint 时 gob 序列化，跨版本兼容靠双注册与字节级改名（见[第 6 章](part-09-adk.md)）。
+ReAct 图用 `WithGenLocalState` 注入一个 `State`（见[第六篇·第 1 章](part-06-state.md#第1章)）：`Messages`（对话历史）、`Extra map[string]any`（用户 K/V，中间件 `SetRunLocalValue` 落点）、`ToolInfos`/`DeferredToolInfos`（给模型的工具清单，可被中间件改写，见[第十篇](part-10-middlewares.md)）、`RemainingIterations`、`ReturnDirectlyToolCallID`、`ToolMsgIDs`（工具名+callID→消息 ID 的映射，保证事件消息与 state 消息 ID 一致）。这个 state 在 checkpoint 时 gob 序列化，跨版本兼容靠双注册与字节级改名（见[第 6 章](part-09-adk.md#第6章)）。
 
 ### 4.4　两个"回合"的澄清：turn_loop.go 不是 ReAct
 
@@ -173,7 +173,7 @@ sequenceDiagram
 
 ## 第 6 章　中断与恢复（HITL）
 
-adk 的中断是对 compose `core.Interrupt`（见[第七篇·第 2 章](part-07-tools-interrupt.md)）的封装：`Interrupt(ctx, info)`（`interrupt.go:88`，无状态）、`StatefulInterrupt(ctx, info, state)`（`:123`，带可恢复状态）、`CompositeInterrupt(ctx, info, state, subSignals...)`（`:156`，聚合子中断信号——多代理层级把子 agent 的中断"卷起来"上抛的机制）。三者都通过 `core.Interrupt` 注入当前 RunPath 作为层级定位。
+adk 的中断是对 compose `core.Interrupt`（见[第七篇·第 2 章](part-07-tools-interrupt.md#第2章)）的封装：`Interrupt(ctx, info)`（`interrupt.go:88`，无状态）、`StatefulInterrupt(ctx, info, state)`（`:123`，带可恢复状态）、`CompositeInterrupt(ctx, info, state, subSignals...)`（`:156`，聚合子中断信号——多代理层级把子 agent 的中断"卷起来"上抛的机制）。三者都通过 `core.Interrupt` 注入当前 RunPath 作为层级定位。
 
 ### 6.1　checkpoint 序列化与跨版本兼容
 

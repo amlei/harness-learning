@@ -42,9 +42,9 @@ eager := isWorkflow || runType == runTypeDAG   // DAG/Workflow 默认 eager
 公开类型 `Graph[I, O any]` 只是 `*graph` 的薄壳（`generic_graph.go:93`）。泛型参数 `I/O` 在构造期通过 `generic.TypeOf[I]()` 固化为 `expectedInputType/expectedOutputType`（`graph.go:100-115`），作为 START/END 哨兵的类型锚点。内部 `graph` 结构（`graph.go:57-89`）的关键字段：
 
 - `nodes map[string]*graphNode` — 节点表；
-- `controlEdges` / `dataEdges` — **边被拆成两套**：控制边（决定触发依赖、不计数据）与数据边（携带值并隐含触发）。`addEdgeWithMappings`（`graph.go:232-294`）通过 `noControl`/`noData` 两个布尔决定登记到哪张表；二者不可同时为 true（`graph.go:240-242`）。这种"控制/数据分离"是 Pregel/DAG 双模式的基石（见[第 4 章](part-05-compose.md)）；
+- `controlEdges` / `dataEdges` — **边被拆成两套**：控制边（决定触发依赖、不计数据）与数据边（携带值并隐含触发）。`addEdgeWithMappings`（`graph.go:232-294`）通过 `noControl`/`noData` 两个布尔决定登记到哪张表；二者不可同时为 true（`graph.go:240-242`）。这种"控制/数据分离"是 Pregel/DAG 双模式的基石（见[第 4 章](part-05-compose.md#第4章)）；
 - `branches map[string][]*GraphBranch` — 同一起点可挂多条分支（`graph.go:547`）；
-- `toValidateMap` — **待类型校验的边队列**（`graph.go:65-68`），是编译期类型推断的核心数据结构（见[第 3 章](part-05-compose.md)）。
+- `toValidateMap` — **待类型校验的边队列**（`graph.go:65-68`），是编译期类型推断的核心数据结构（见[第 3 章](part-05-compose.md#第3章)）。
 
 `AddEdge(start, end)` 是 `addEdgeWithMappings(start, end, false, false)` 的转发（`generic_graph.go:106`），即默认同时建控制边和数据边。
 
@@ -85,7 +85,7 @@ type GraphBranch struct {
 
 ### 2.5　Runnable：编译产物与四范式自动派生
 
-`Runnable[I,O]` 接口（`runnable.go:32`）是 compose 对外的执行契约，四方法 `Invoke/Stream/Collect/Transform` 覆盖"非流/流 × 输入/输出"的四种组合（范式概念见[第三篇·第 7 章](part-03-streaming.md)与[第六篇](part-06-state.md)）。其内部表示 `composableRunnable`（`runnable.go:46`）只存两个字段：`i invoke`、`t transform`——**只保留非流和全流两条主轴**，另两种由这俩派生。
+`Runnable[I,O]` 接口（`runnable.go:32`）是 compose 对外的执行契约，四方法 `Invoke/Stream/Collect/Transform` 覆盖"非流/流 × 输入/输出"的四种组合（范式概念见[第三篇·第 7 章](part-03-streaming.md#第7章)与[第六篇](part-06-state.md)）。其内部表示 `composableRunnable`（`runnable.go:46`）只存两个字段：`i invoke`、`t transform`——**只保留非流和全流两条主轴**，另两种由这俩派生。
 
 派生逻辑在 `newRunnablePacker`（`runnable.go:336`），这是 compose 最精巧的一处：用户给的 `i/s/c/t` 中任意非空子集，都能补齐另外三个。优先级链（`runnable.go:359-397`）：`r.i` ?? s ?? c ?? t；`r.s` ?? t ?? i ?? c；`r.c` ?? t ?? i ?? s；`r.t` ?? s ?? c ?? i。各 fallback 见 `runnable.go:194-334`，如 `invokeByStream`（`:194`）= 跑 Stream 再 `concatStreamReader`；`streamByInvoke`（`:234`）= 跑 Invoke 再包成单元素流。
 

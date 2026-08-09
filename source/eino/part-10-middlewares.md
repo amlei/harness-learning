@@ -2,7 +2,7 @@
 
 *作者：Amlei　·　更新时间：2026-08-09*
 
-> Eino 的核心 ReAct 循环（[第九篇·第 4 章](part-09-adk.md)）只做三件事：调模型 → 解析工具调用 → 执行工具 → 回到调模型。如果每加一个新能力（动态工具、任务清单、摘要压缩、文件访问、规范注入……）都要改这个循环，核心会迅速膨胀、分支爆炸、provider 差异无处安放。
+> Eino 的核心 ReAct 循环（[第九篇·第 4 章](part-09-adk.md#第4章)）只做三件事：调模型 → 解析工具调用 → 执行工具 → 回到调模型。如果每加一个新能力（动态工具、任务清单、摘要压缩、文件访问、规范注入……）都要改这个循环，核心会迅速膨胀、分支爆炸、provider 差异无处安放。
 >
 > adk 的解法是把"横切能力"抽成一条**中间件链**：核心循环只负责按固定编排跑 `handlers` 列表，每个 handler 在固定切面上改写请求或响应。能力可插拔，核心保持纯净。这套机制的入口接口是 `TypedChatModelAgentMiddleware[M]`（`adk/handler.go:139`），8 个官方中间件位于 `adk/middlewares/`。
 
@@ -44,7 +44,7 @@
 - `WrapModel`：**反序构造**端点链（`wrappers.go:1041` 的 `for i := len(w.handlers)-1; i >= 0; i--`），结果是 `handlers[0]` 包在最外层，即 `A(B(C(model)))`。
 - `WrapXxxToolCall`：同样 `handlers[0]` 最外层。
 
-一句话记忆：**所有钩子里 `handlers[0]` 都"最先看到"或"最外层包裹"**。模型调用的完整包裹层次见[第九篇·第 8 章](part-09-adk.md)：`failover → retry → eventSender → WrapModel → callbackInjection → Model`。
+一句话记忆：**所有钩子里 `handlers[0]` 都"最先看到"或"最外层包裹"**。模型调用的完整包裹层次见[第九篇·第 8 章](part-09-adk.md#第8章)：`failover → retry → eventSender → WrapModel → callbackInjection → Model`。
 
 ### 2.2　改 request 还是改 response？改的会不会留？
 
@@ -91,7 +91,7 @@
 
 ### 3.6　filesystem：沙箱文件访问
 
-给 agent 一组文件/Shell 工具（`ls/read_file/write_file/edit_file/glob/grep`，可选 `execute`）。`BeforeAgent`（`filesystem.go:405`）追加系统 prompt + 工具集；`UseMultiModalRead` 时 `read_file` 升级为 `EnhancedInvokableTool`，支持图片/PDF（base64）。工具用 `utils.InferTool` 从 Go 函数+结构体 tag 反推 schema。沙箱边界由 `filesystem.Backend` 接口实现决定，中间件本身不假定本地磁盘（Backend 协议详见[第十一篇·第 4 章](part-11-multiagent.md)）。prebuilt/deep 默认装载它。
+给 agent 一组文件/Shell 工具（`ls/read_file/write_file/edit_file/glob/grep`，可选 `execute`）。`BeforeAgent`（`filesystem.go:405`）追加系统 prompt + 工具集；`UseMultiModalRead` 时 `read_file` 升级为 `EnhancedInvokableTool`，支持图片/PDF（base64）。工具用 `utils.InferTool` 从 Go 函数+结构体 tag 反推 schema。沙箱边界由 `filesystem.Backend` 接口实现决定，中间件本身不假定本地磁盘（Backend 协议详见[第十一篇·第 4 章](part-11-multiagent.md#第4章)）。prebuilt/deep 默认装载它。
 
 ### 3.7　patchtoolcalls：补全悬挂的工具响应
 

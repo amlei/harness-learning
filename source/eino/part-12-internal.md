@@ -33,7 +33,7 @@ func TypeOf[T any]() reflect.Type {
 
 `TypeOf[T]()` 用 `(*T)(nil)` 技巧拿到一个指向 `T` 的指针的 `reflect.Type`，再 `.Elem()` 解引用，从而**无需任何 `T` 的实例**即可在编译期固定、运行期取回 `reflect.Type`。这是整个框架"泛型注册表"模式的基石——见 `internal/concat.go:29`、`internal/merge.go:29`、`schema/serialization.go:84` 几乎所有"按类型注册函数"的 API 都以 `TypeOf[T]()` 作为 map 键。
 
-`NewInstance[T]()`（`generic.go:27`）则反向：根据 `T` 的 `Kind` 用反射造一个零值实例，专门处理 `map/slice/ptr` 与多层指针。它的典型用途是序列化前的"占位实例化"——`schema.RegisterName[T]` 产生一个供 gob/内部序列化器注册的具体值。其余几个工具短小但被多处复用：`PtrOf[T]`（`:64`，给配置值取址）、`Reverse[S ~[]E, E any]`（`:74`，注意用的是 `~[]E` 约束，兼容自定义切片类型）——后者被 `internal/callbacks/inject.go:166` 用于把回调处理器列表反序，以保证 `OnStart` 按"后注册先执行"的语义触发（见[第八篇·第 3 章](part-08-callbacks.md)的洋葱模型）。
+`NewInstance[T]()`（`generic.go:27`）则反向：根据 `T` 的 `Kind` 用反射造一个零值实例，专门处理 `map/slice/ptr` 与多层指针。它的典型用途是序列化前的"占位实例化"——`schema.RegisterName[T]` 产生一个供 gob/内部序列化器注册的具体值。其余几个工具短小但被多处复用：`PtrOf[T]`（`:64`，给配置值取址）、`Reverse[S ~[]E, E any]`（`:74`，注意用的是 `~[]E` 约束，兼容自定义切片类型）——后者被 `internal/callbacks/inject.go:166` 用于把回调处理器列表反序，以保证 `OnStart` 按"后注册先执行"的语义触发（见[第八篇·第 3 章](part-08-callbacks.md#第3章)的洋葱模型）。
 
 ### 2.2　`gmap/` 与 `gslice/`：补齐标准库
 
@@ -47,24 +47,24 @@ Go 标准库（即便到 1.21 的 `maps`/`slices`）也不提供"把 map 合并/
 
 ### 3.1　`internal/channel.go`：泛型无界通道（不承载 token 流）
 
-> **一处重要澄清**：`UnboundedChan[T]`（`channel.go:22`）**不承载核心 token 流**——核心流用的是 Go 原生带缓冲 channel（见[第三篇·第 2 章](part-03-streaming.md)）。它是框架内部对原生 `chan` 的增强：(a) 泛型、元素类型编译期固定；(b) 容量无界；(c) 安全关闭语义——`Close` 幂等，`Send` 在已关闭时 panic（复刻原生 chan），`TrySend` 改为返回 bool。同步靠 `sync.Mutex` + `sync.Cond`。
+> **一处重要澄清**：`UnboundedChan[T]`（`channel.go:22`）**不承载核心 token 流**——核心流用的是 Go 原生带缓冲 channel（见[第三篇·第 2 章](part-03-streaming.md#第2章)）。它是框架内部对原生 `chan` 的增强：(a) 泛型、元素类型编译期固定；(b) 容量无界；(c) 安全关闭语义——`Close` 幂等，`Send` 在已关闭时 panic（复刻原生 chan），`TrySend` 改为返回 bool。同步靠 `sync.Mutex` + `sync.Cond`。
 
 这个原语被三处关键复用，角色各有不同：
 
-- **`adk/utils.go:31`** 把 `UnboundedChan[T]` 包成 `AsyncIterator[T]`/`AsyncGenerator[T]` 对——这是 adk 事件流（见[第九篇·第 2 章](part-09-adk.md)）的"迭代器/生成器"抽象，对外提供 `Next()/Send()/Close()`。
+- **`adk/utils.go:31`** 把 `UnboundedChan[T]` 包成 `AsyncIterator[T]`/`AsyncGenerator[T]` 对——这是 adk 事件流（见[第九篇·第 2 章](part-09-adk.md#第2章)）的"迭代器/生成器"抽象，对外提供 `Next()/Send()/Close()`。
 - **`flow/agent/react/option.go:112`** 用它实现 ReAct Agent 的 `Iterator`——一个轻量 FIFO 流，承载值与错误。这里特意不用原生 chan，是因为 ReAct 循环的生产/消费速率不对等，无界缓冲避免了生产者阻塞。
-- **`compose/graph_manager.go:275`** 用 `UnboundedChan[*task]` 作为图执行调度器（见[第五篇·第 4 章](part-05-compose.md)）的就绪队列。
+- **`compose/graph_manager.go:275`** 用 `UnboundedChan[*task]` 作为图执行调度器（见[第五篇·第 4 章](part-05-compose.md#第4章)）的就绪队列。
 
 为何不直接用原生 chan？因为这三处都需要"无界缓冲 + 显式 TrySend + 泛型"的组合，原生 chan 三者都缺。
 
 ### 3.2　`internal/concat.go` 与 `internal/merge.go`：可注册的类型分发
 
-`concat.go` 与 `merge.go` 揭示了 Eino 的一个关键设计哲学：**把"如何把多个同类值变成一个"这种领域规则，从硬编码提升为可注册的类型分发**。两者都用 `reflect.Type→any` 注册表（见[第三篇·第 3 章](part-03-streaming.md)与[第六篇·第 4 章](part-06-state.md)的详述）：
+`concat.go` 与 `merge.go` 揭示了 Eino 的一个关键设计哲学：**把"如何把多个同类值变成一个"这种领域规则，从硬编码提升为可注册的类型分发**。两者都用 `reflect.Type→any` 注册表（见[第三篇·第 3 章](part-03-streaming.md#第3章)与[第六篇·第 4 章](part-06-state.md#第4章)的详述）：
 
 - `concat.go` 服务"流式分片合拢"：`string` 走 `strings.Builder` 拼接，数值走 use-last；用户类型用 `RegisterStreamChunkConcatFunc[T]` 注册；未注册类型走"至多一个非零值"规则（多个非零报错）。
 - `merge.go` 服务"多节点输出按字段合并"（图 fan-in）：未注册 map 类型走 `mergeMap`，**重复 key 报错**——比 concat 的"多非零报错"更严格。
 
-`Pregel` 风格的 `pregelChannel`（见[第五篇·第 4 章](part-05-compose.md)）正是在此之上实现 fan-in reduce 语义。
+`Pregel` 风格的 `pregelChannel`（见[第五篇·第 4 章](part-05-compose.md#第4章)）正是在此之上实现 fan-in reduce 语义。
 
 ---
 
@@ -78,7 +78,7 @@ Go 标准库（即便到 1.21 的 `maps`/`slices`）也不提供"把 map 合并/
 
 ### 4.1　与 `schema/serialization.go` 的分工
 
-`schema/serialization.go` 是对外的**注册门面**，自身不是引擎。它的 `RegisterName[T]`（`:83`）做三件事：(1) 用 `generic.NewInstance[T]()` 造实例；(2) 调 `gob.RegisterName`（维护 gob 那条并行注册表，供 adk 的 `GobEncode` 路径用）；(3) 调 `serialization.GenericRegister[T]`（维护本章的 JSON 引擎注册表）。实际消费引擎的位置：`compose/graph_run.go:576` 与 `compose/checkpoint.go:176` 实例化 `&serialization.InternalSerializer{}`，用于把图执行检查点持久化（见[第七篇·第 3 章](part-07-tools-interrupt.md)）。换言之，**`internal/serialization` 是引擎、`schema/serialization` 是类型注册表、`compose/checkpoint` 是调用点**，三者通过 `reflect.Type↔name` 的双向 map 解耦。
+`schema/serialization.go` 是对外的**注册门面**，自身不是引擎。它的 `RegisterName[T]`（`:83`）做三件事：(1) 用 `generic.NewInstance[T]()` 造实例；(2) 调 `gob.RegisterName`（维护 gob 那条并行注册表，供 adk 的 `GobEncode` 路径用）；(3) 调 `serialization.GenericRegister[T]`（维护本章的 JSON 引擎注册表）。实际消费引擎的位置：`compose/graph_run.go:576` 与 `compose/checkpoint.go:176` 实例化 `&serialization.InternalSerializer{}`，用于把图执行检查点持久化（见[第七篇·第 3 章](part-07-tools-interrupt.md#第3章)）。换言之，**`internal/serialization` 是引擎、`schema/serialization` 是类型注册表、`compose/checkpoint` 是调用点**，三者通过 `reflect.Type↔name` 的双向 map 解耦。
 
 > **一处注释误导（勘误）**：`schema/serialization.go:75-82` 与 `:129-136` 的注释称"序列化行为基于标准库 `encoding/gob`"。实际由 compose 检查点使用的 `serialization.InternalSerializer` 是一套基于 sonic/JSON 的自研类型标签信封，与 gob 无关。gob 只是 `RegisterName`/`Register` 里并行维护的另一条注册表，并非检查点序列化的真正引擎。注释把两套并行机制混为一谈，易误导。
 
@@ -88,11 +88,11 @@ Go 标准库（即便到 1.21 的 `maps`/`slices`）也不提供"把 map 合并/
 
 ### 5.1　`internal/safe/panic.go`：panic→error 的统一封装
 
-`safe` 包极小，只有一个 `panicErr`（`safe/panic.go:23`）和 `NewPanicErr(info, stack)`（`:35`）。它的意义不在自身，而在**统一的 `recover` 模式**：全框架 30+ 处协程入口都用 `recover()→safe.NewPanicErr(panicErr, debug.Stack())` 把崩溃转成 error，再走正常的错误回流通道。典型如 `schema/stream.go:752`（流的 reader 协程崩溃时把错误作为一个 chunk 发出，见[第三篇·第 2 章](part-03-streaming.md)）、`adk/flow.go:492`、`compose/graph_manager.go:287`、`compose/tool_node.go:1003`（见[第七篇·第 1 章](part-07-tools-interrupt.md)）。这种"边界 recover + 栈保留"的纪律，是 Eino 在大量协程并发下仍能保证"一个节点的 panic 不会击穿整个编排"的关键。
+`safe` 包极小，只有一个 `panicErr`（`safe/panic.go:23`）和 `NewPanicErr(info, stack)`（`:35`）。它的意义不在自身，而在**统一的 `recover` 模式**：全框架 30+ 处协程入口都用 `recover()→safe.NewPanicErr(panicErr, debug.Stack())` 把崩溃转成 error，再走正常的错误回流通道。典型如 `schema/stream.go:752`（流的 reader 协程崩溃时把错误作为一个 chunk 发出，见[第三篇·第 2 章](part-03-streaming.md#第2章)）、`adk/flow.go:492`、`compose/graph_manager.go:287`、`compose/tool_node.go:1003`（见[第七篇·第 1 章](part-07-tools-interrupt.md#第1章)）。这种"边界 recover + 栈保留"的纪律，是 Eino 在大量协程并发下仍能保证"一个节点的 panic 不会击穿整个编排"的关键。
 
 ### 5.2　`internal/core/`：地址、中断、恢复的核心抽象
 
-`core` 是 `internal` 里业务语义最重的包，服务于"可恢复的中断式编排"（见[第七篇·第 2 章](part-07-tools-interrupt.md)）。其骨架是**层级地址**：`Address`（`core/address.go:32`）是一串 `AddressSegment`，形如 `agent:A;node:graph_a;tool:tool_call_123`。`AppendAddressSegment`（`:118`）在每次进入子组件时延长地址，并把"恢复数据"与"中断状态"沿地址分发到对应子上下文。
+`core` 是 `internal` 里业务语义最重的包，服务于"可恢复的中断式编排"（见[第七篇·第 2 章](part-07-tools-interrupt.md#第2章)）。其骨架是**层级地址**：`Address`（`core/address.go:32`）是一串 `AddressSegment`，形如 `agent:A;node:graph_a;tool:tool_call_123`。`AppendAddressSegment`（`:118`）在每次进入子组件时延长地址，并把"恢复数据"与"中断状态"沿地址分发到对应子上下文。
 
 中断侧（`core/interrupt.go`）：`Interrupt`（`:84`）生成 `InterruptSignal`（`:43`，内含 UUID、地址、Info、State、`Subs`），可递归携带子信号形成树。`SignalToPersistenceMaps`（`:327`）把信号树拍平为两张持久化 map。恢复侧（`core/resume.go`）：`GetInterruptState[T]`（`:28`）和 `GetResumeContext[T]`（`:86`）都是**泛型 + 类型断言**的对外 API——组件用 `GetInterruptState[MyState](ctx)` 一次拿到 `(wasInterrupted, hasState, state)`，类型安全。`core` 包被 `adk`、`compose`、`components/tool` 复用，是横贯 compose 与 adk 两套编排体系的中断/恢复脊索。
 
@@ -131,7 +131,7 @@ Go 标准库（即便到 1.21 的 `maps`/`slices`）也不提供"把 map 合并/
    统一模式：泛型注册(Typed API) → reflect.Type 擦除存储 → 运行期 GetXxxFunc(typ) 反射分发
 ```
 
-`compose/generic_helper.go:28` 的 `newGenericHelper[I,O]()`（见[第六篇·第 5 章](part-06-state.md)）是这条边界的范例：它在节点构造期（类型参数 `I/O` 已知）通过泛型函数族生成一组闭包，再以 `func() any`/`valueHandler` 等非泛型签名塞进 `genericHelper` 结构体。这样图的调度器只需持有一份 `*genericHelper`，不必再参数化整个图运行时——**泛型只活在构造期，运行时退化为 `any`+反射**。这是 Eino 在"Go 泛型不支持方法的类型参数"约束下的务实折中。
+`compose/generic_helper.go:28` 的 `newGenericHelper[I,O]()`（见[第六篇·第 5 章](part-06-state.md#第5章)）是这条边界的范例：它在节点构造期（类型参数 `I/O` 已知）通过泛型函数族生成一组闭包，再以 `func() any`/`valueHandler` 等非泛型签名塞进 `genericHelper` 结构体。这样图的调度器只需持有一份 `*genericHelper`，不必再参数化整个图运行时——**泛型只活在构造期，运行时退化为 `any`+反射**。这是 Eino 在"Go 泛型不支持方法的类型参数"约束下的务实折中。
 
 ---
 

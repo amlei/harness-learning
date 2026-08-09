@@ -40,11 +40,11 @@ type internalState struct {
 
 ### 1.3　与 LangGraph 的根本差异（一处关键校正）
 
-> **一处重要校正**：Eino 的 StateGraph **没有** LangGraph 那种"每个状态字段配一个 reducer、每个 superstep 末尾 reduce"的机制。状态对象本身从不被 reduce；它的"累积"完全由用户处理器原地修改完成。被 reduce 的是另一种东西——多前驱 fan-in 到同一节点时的输出合并（见[第 4 章](part-06-state.md)）。
+> **一处重要校正**：Eino 的 StateGraph **没有** LangGraph 那种"每个状态字段配一个 reducer、每个 superstep 末尾 reduce"的机制。状态对象本身从不被 reduce；它的"累积"完全由用户处理器原地修改完成。被 reduce 的是另一种东西——多前驱 fan-in 到同一节点时的输出合并（见[第 4 章](part-06-state.md#第4章)）。
 
 状态是一个**挂在 `context.Context` 上的可变单例**，跨整次 `Invoke/Stream` 调用（即跨所有 superstep）存活，由节点/处理器在 mutex 保护下原地修改。superstep 循环（`graph_run.go:241`）从不重置它；只有新一轮用户调用才会通过 `runCtx` 再生一个（`graph.go:849`）。消息历史、工具调用记忆等 agent 状态，正是靠这一对象在 chat model 节点与 tools 节点之间逐轮累积。
 
-与 Pregel 的关系：`pregelChannel`（`pregel.go:25`）只是"每个节点入侧一个 map 累加器"，借用了 Pregel 的"超步 + 通道"骨架（[第五篇·第 4 章](part-05-compose.md)），但通道里累的是**节点输出**而非"状态切片"，合并走 `mergeValues`。**状态单例与通道累加器是两套并行的数据通路**：前者跨轮、后者单轮 fan-in。
+与 Pregel 的关系：`pregelChannel`（`pregel.go:25`）只是"每个节点入侧一个 map 累加器"，借用了 Pregel 的"超步 + 通道"骨架（[第五篇·第 4 章](part-05-compose.md#第4章)），但通道里累的是**节点输出**而非"状态切片"，合并走 `mergeValues`。**状态单例与通道累加器是两套并行的数据通路**：前者跨轮、后者单轮 fan-in。
 
 这一设计选择的代价是：回放与分叉要靠 checkpoint 显式 `deepCopyState`（`graph_run.go:572-596`，用 `serialization.InternalSerializer` 序列化深拷贝，见[第七篇](part-07-tools-interrupt.md)）。Eino 的选择与其"checkpoint 显式可选"的整体设计一致——只有 `WithCheckPointStore` 开启时才付出拷贝代价。
 
@@ -103,7 +103,7 @@ unpackStreamReader[T](isr)     -> (*StreamReader[T], bool)   // stream_reader.go
 
 ### 3.2　四范式桥接：伪流与拼接
 
-节点以四种范式（Invoke/Stream/Collect/Transform，见[第三篇·第 7 章](part-03-streaming.md)）声明自己的 I/O 形状。当上下游范式不匹配时，框架自动桥接（`schema/doc.go:58-75`）：
+节点以四种范式（Invoke/Stream/Collect/Transform，见[第三篇·第 7 章](part-03-streaming.md#第7章)）声明自己的 I/O 形状。当上下游范式不匹配时，框架自动桥接（`schema/doc.go:58-75`）：
 
 - 上游输出 `T`、下游只要 `StreamReader[T]` → 把 `T` 包成**单 chunk 流**，即"伪流（fake stream）"。它满足接口但不降低 TTFT（首字延迟）。
 - 上游输出 `StreamReader[T]`、下游只要 `T` → `concatStreamReader`（`stream_concat.go:50`）把整条流吃成单值。
@@ -113,7 +113,7 @@ unpackStreamReader[T](isr)     -> (*StreamReader[T], bool)   // stream_reader.go
 ### 3.3　读取、拷贝、转发
 
 - **读取/拼接**：`concatStreamReader[T]`（`stream_concat.go:50-88`）把整条流读完成 `[]T`，再 `internal.ConcatItems`（`concat.go:91`）。与[第三篇](part-03-streaming.md)的 concat 算法同源——compose 的 `concatStreamReader` 是薄封装，真正逐类型 concat 在 `internal/concat.go`。
-- **多后继拷贝**：`copyItem`（`graph_run.go:1020-1040`）对流向多后继时调 `sr.copy(n)`（`stream_reader.go:45`），底层是 `schema.StreamReader.Copy`，保证多后继各自独立读取（见[第三篇·第 4 章](part-03-streaming.md)的共享惰性链表）。
+- **多后继拷贝**：`copyItem`（`graph_run.go:1020-1040`）对流向多后继时调 `sr.copy(n)`（`stream_reader.go:45`），底层是 `schema.StreamReader.Copy`，保证多后继各自独立读取（见[第三篇·第 4 章](part-03-streaming.md#第4章)的共享惰性链表）。
 - **运行期识别值或流**：`copyItem`（`graph_run.go:1026`）对 `item.(streamReader)` 做类型断言——是流就 copy 分发，是值就共享引用。`channel.get` 的 `isStream` 形参决定边处理器走 `transform`（流）还是 `invoke`（值）分支（`graph_manager.go:51-63`）。因此**同一套字段映射/类型校验 `handlerPair` 可同时服务 Invoke 与 Stream 两种调用模式**。
 
 ---
@@ -124,12 +124,12 @@ unpackStreamReader[T](isr)     -> (*StreamReader[T], bool)   // stream_reader.go
 
 - 先查注册表 `internal.GetMergeFunc(t0)`（`internal/merge.go:32`）；用户可用 `RegisterValuesMergeFunc[T]`（`values_merge.go:29`）按类型注册自定义合并（如切片 append、消息列表拼接）。
 - 否则 map 类型走 `mergeMap`（`internal/merge.go:62-81`）：浅层并集，**重复 key 直接报错**——这是默认的"无冲突"假设。
-- 流类型走 `streamReader.merge`/`mergeWithNames`（`stream_reader.go:79-93`），委托给 `schema.MergeStreamReaders`/`InternalMergeNamedStreamReaders`（见[第三篇·第 5 章](part-03-streaming.md)）。
+- 流类型走 `streamReader.merge`/`mergeWithNames`（`stream_reader.go:79-93`），委托给 `schema.MergeStreamReaders`/`InternalMergeNamedStreamReaders`（见[第三篇·第 5 章](part-03-streaming.md#第5章)）。
 - 都不匹配则报"unsupported type"。
 
 **"每轮 reduce 在何处触发"的精确回答**：用户态 state 单例**不**被 reduce；每轮 superstep 触发的 reduce 是**多前驱 fan-in** 的 `mergeValues`，发生在 `channel.get` 里（`pregel.go:83` / `dag.go:186`）。默认 map 合并要求 key 互斥（`internal/merge.go:73`），意味着多前驱若都写同一字段会运行期失败——除非用户注册自定义 merge。这与 LangGraph 的 reducer 默认值理念不同，Eino 把"如何合并"显式留给用户注册。
 
-> **concat 与 merge 再次区分**（见[第三篇·第 3 章](part-03-streaming.md)）：`concat` 是"同字段累加"（流式分片合拢），`merge` 是"无重叠字段的 fan-in"（同 key 报错）。`concatMaps`（`concat.go:113`）对同 key 递归累加；`mergeMap`（`merge.go:62`）对重复 key 报错——二者用于不同图场景，在底座层（`internal/concat.go` vs `internal/merge.go`）就分头实现。
+> **concat 与 merge 再次区分**（见[第三篇·第 3 章](part-03-streaming.md#第3章)）：`concat` 是"同字段累加"（流式分片合拢），`merge` 是"无重叠字段的 fan-in"（同 key 报错）。`concatMaps`（`concat.go:113`）对同 key 递归累加；`mergeMap`（`merge.go:62`）对重复 key 报错——二者用于不同图场景，在底座层（`internal/concat.go` vs `internal/merge.go`）就分头实现。
 
 ---
 
@@ -143,7 +143,7 @@ unpackStreamReader[T](isr)     -> (*StreamReader[T], bool)   // stream_reader.go
 - `inputZeroValue/inputEmptyStream`（`:245-256`）：零值/空流工厂。
 - `inputStreamFilter`（`streamMapFilter` `:153`）：当节点以 `inputKey` 模式接入时，从 `map[string]any` 流中按 key 取出对应字段的子流。
 
-派生方法 `forMapInput/forMapOutput/forPredecessorPassthrough/forSuccessorPassthrough`（`:71-151`）在 passthrough 节点或 inputKey/outputKey 节点处复刻并替换相应字段——这是类型在"链式 passthrough 推断"中传染的载体（见[第五篇·第 3 章](part-05-compose.md)）。`handlerPair`（`:158`）是统一的 `(invoke valueHandler, transform streamHandler)` 二元组，使同一处理器既能跑在值通道也能跑在流通道。
+派生方法 `forMapInput/forMapOutput/forPredecessorPassthrough/forSuccessorPassthrough`（`:71-151`）在 passthrough 节点或 inputKey/outputKey 节点处复刻并替换相应字段——这是类型在"链式 passthrough 推断"中传染的载体（见[第五篇·第 3 章](part-05-compose.md#第3章)）。`handlerPair`（`:158`）是统一的 `(invoke valueHandler, transform streamHandler)` 二元组，使同一处理器既能跑在值通道也能跑在流通道。
 
 `genericHelper` 是 Eino"**内部反射、边界泛型**"取舍（见[第十二篇](part-12-internal.md)）在 compose 层的具象：用 `generic.TypeOf[I]()` 把泛型参数固化为 `reflect.Type`，预生成所有转换器/零值工厂，使运行期避开热路径反射，仅在边界的 `unpackStreamReader`/`inputFieldMappingConverter` 等少数点用反射兜底。
 
@@ -182,7 +182,7 @@ flowchart LR
 ## 第 7 章　为何如此设计：权衡的总账
 
 1. **可变状态单例 vs reducer 模型**：Eino 选"可变 context 单例 + mutex + 用户处理器原地改"，而非 LangGraph 的"不可变 + 每字段 reducer + 每轮自动 reduce"。后者声明式、易回放/分叉、天然适配 checkpoint；前者实现更轻、对 Go 开发者心智更直接、避免每轮深拷贝，代价是回放与分叉要靠 checkpoint 显式 `deepCopyState`（见[第七篇](part-07-tools-interrupt.md)）。Eino 的选择与其"checkpoint 显式可选"的整体设计一致。
-2. **编译期类型安全 vs 运行期反射**：用 Go 泛型在编译期固化节点 I/O（`newGenericHelper[I,O]`），并在 `updateToValidateMap`（见[第五篇·第 3 章](part-05-compose.md)）做不动点类型推断，把绝大多数类型错误前置到 `Compile`。但遇到 interface、`any`、passthrough 传染，就降级为"编译期插检查器 + 运行期断言"（`assignableTypeMay`、`defaultValueChecker`）。这条边界画得很克制：能静态就静态，不能就用 `handlerPair` 双形态兜底。
+2. **编译期类型安全 vs 运行期反射**：用 Go 泛型在编译期固化节点 I/O（`newGenericHelper[I,O]`），并在 `updateToValidateMap`（见[第五篇·第 3 章](part-05-compose.md#第3章)）做不动点类型推断，把绝大多数类型错误前置到 `Compile`。但遇到 interface、`any`、passthrough 传染，就降级为"编译期插检查器 + 运行期断言"（`assignableTypeMay`、`defaultValueChecker`）。这条边界画得很克制：能静态就静态，不能就用 `handlerPair` 双形态兜底。
 3. **声明式字段映射 vs 手写 lambda**：字段映射保住了拓扑语义（`fieldMappingRecords` 进入 `GraphInfo`，可被可视化/重放）；但表达能力有限（只能按 `FieldPath` 抽取/赋值），复杂变换仍要 `WithCustomExtractor` 或 lambda 兜底。`assignOne` 的反射写入也带来运行期开销——密集热点图里值得注意。
 4. **fan-in 合并显式注册**：默认 `mergeMap` 对重复 key 报错，把"如何合并"显式留给用户 `RegisterValuesMergeFunc`。这与 reducer 默认值理念相反，但对 Go 开发者更可预测——不写合并函数就是"key 必须互斥"。
 5. **状态并发序列化的代价**：同一层级状态读写由 `internalState.mu` 串行化，处理器以 `pMu.Lock()` 包裹整个用户函数。多节点并发跑在同一图里时，对状态的访问被序列化——这意味着**重 IO 的 state 处理器会成为瓶颈**，建议把重逻辑放节点本体而非 handler。

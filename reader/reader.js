@@ -17,6 +17,8 @@
 
   /* ── mermaid palette follows the active theme ── */
   let mermaidReady=false;
+  /* ── cross-ref chapter deep-link state ── */
+  let currentPart=null, pendingChapter=null;
   const cssVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
   function hexLum(h){ h=h.replace('#',''); if(h.length===3)h=h.split('').map(c=>c+c).join(''); const r=parseInt(h.slice(0,2),16)/255,g=parseInt(h.slice(2,4),16)/255,b=parseInt(h.slice(4,6),16)/255; return 0.2126*r+0.7152*g+0.0722*b; }
   function initMermaid(){
@@ -53,7 +55,7 @@
 
   /* ── project cover ── */
   function renderCover(){
-    topbar.classList.remove('show'); window.scrollTo(0,0); buildVolToc(null);
+    currentPart=null; topbar.classList.remove('show'); window.scrollTo(0,0); buildVolToc(null);
     crumb.textContent=R.home.title; crumbSep.style.display='inline';
     const total=R.parts.length;
     const vols=R.parts.map((pt,i)=>{const [file,num,title,essence,kw,size]=pt;
@@ -101,8 +103,10 @@
       <aside class="toc-rail" id="tocRail"><div class="toc-rail-inner"><p class="rail-label">本章</p><ul id="railList"></ul></div></aside>
     </div>`;
     postProcess(); buildRail(); setupScrollSpy(); trackScroll();
+    if(pendingChapter!=null){ const ch=pendingChapter; pendingChapter=null; setTimeout(()=>scrollToChapter(ch),80); }
   }
   function loadPart(file){const idx=R.parts.findIndex(p=>p[0]===file); if(idx<0){renderCover();return;}
+    currentPart=file;
     const total=R.parts.length,[,num]=R.parts[idx],prev=idx>0?R.parts[idx-1]:null,next=idx<total-1?R.parts[idx+1]:null;
     crumb.textContent=`${R.home.title} · 第${num}篇`; crumbSep.style.display='inline'; buildVolToc(file);
     renderDoc(`./${file}.md`,{num,idx,total,prev,next,isPart:true});}
@@ -131,7 +135,17 @@
       pre.appendChild(btn);
     });
     prose.querySelectorAll('a[href^="http"]').forEach(a=>{a.target='_blank';a.rel='noopener';});
-    if(IS_SOURCE){ prose.querySelectorAll('a[href$=".md"]').forEach(a=>{const m=(a.getAttribute('href')||'').match(/(part-[\w-]+)\.md$/); if(m){a.title='在本卷中打开 · '+m[1];a.addEventListener('click',e=>{e.preventDefault();location.hash='#'+m[1];});}}); }
+    if(IS_SOURCE){ prose.querySelectorAll('a[href]').forEach(a=>{
+      const m=(a.getAttribute('href')||'').match(/^(part-[\w-]+)\.md(?:#(.*))?$/);
+      if(!m) return;
+      const file=m[1], ch=parseChapterNum(m[2]||'');
+      a.title='在本卷中打开 · '+file+(ch?(' · 第 '+ch+' 章'):'');
+      a.addEventListener('click',e=>{
+        e.preventDefault();
+        if(currentPart===file) scrollToChapter(ch);          // same part → scroll now
+        else { pendingChapter=ch; location.hash='#'+file; }  // other part → load, then scroll
+      });
+    }); }
     if(merms.length&&mermaidReady){ merms.forEach((d,i)=>d.id='m-'+i);
       mermaid.run({nodes:merms}).then(()=>merms.forEach(attachZoom)).catch(()=>merms.forEach(d=>{d.classList.add('mermaid-error');d.textContent='♢ diagram render error';}));
     }
@@ -146,6 +160,13 @@
     const hs=prose.querySelectorAll('h2,h3');
     if(hs.length<3){ if(rail) rail.style.display='none'; return; }
     list.innerHTML=Array.from(hs).map(h=>`<li class="${h.tagName==='H3'?'lvl3':''}"><a href="#${h.id}" data-target="${h.id}">${h.textContent.replace(/^§\s*/,'').slice(0,40)}</a></li>`).join('');
+    // Rail clicks scroll within the page; they must NOT touch location.hash —
+    // the router is hash-driven, so an unknown (heading) hash would reload the cover.
+    list.querySelectorAll('a').forEach(a=>a.addEventListener('click',e=>{
+      e.preventDefault();
+      const t=document.getElementById(a.dataset.target);
+      if(t) t.scrollIntoView({behavior:'smooth',block:'start'}); /* scroll-margin-top:78px offsets the fixed topbar */
+    }));
   }
   function setupScrollSpy(){
     const rail=document.getElementById('tocRail'); if(!rail||rail.style.display==='none') return;
@@ -156,6 +177,30 @@
     const setActive=id=>{ if(id===activeId) return; activeId=id; links.forEach(a=>a.classList.toggle('active', a.dataset.target===id)); };
     const io=new IntersectionObserver((ents)=>{ ents.forEach(en=>{ if(en.isIntersecting) setActive(en.target.id); }); }, {rootMargin:'-72px 0px -68% 0px', threshold:0});
     heads.forEach(h=>io.observe(h));
+  }
+
+  /* ── chapter deep-link helpers ── */
+  // parse "第 N 章" out of an explicit href fragment (#第4章, #第 4 章, #第1章).
+  // Cross-refs MUST carry the fragment; link text is not consulted.
+  function parseChapterNum(s){
+    if(!s) return null;
+    let m=s.match(/第\s*(\d+)\s*章/); if(m) return parseInt(m[1],10);     // 第 4 章
+    m=s.match(/第\s*(\d+)[^第]*章/); if(m) return parseInt(m[1],10);       // 第 1、4 章 → first
+    const cn=s.match(/第\s*([一二三四五六七八九十]+)\s*章/); if(cn){
+      const t=cn[1], v={一:1,二:2,三:3,四:4,五:5,六:6,七:7,八:8,九:9};
+      if(t==='十') return 10;
+      if(t[0]==='十') return 10+(v[t[1]]||0);
+      if(t[t.length-1]==='十') return (v[t[0]]||0)*10;
+      const i=t.indexOf('十'); if(i>0) return (v[t[0]]||0)*10+(v[t[i+1]]||0);
+      return v[t]||null;
+    }
+    return null;
+  }
+  function scrollToChapter(ch){
+    if(ch==null) return;
+    const prose=document.getElementById('prose'); if(!prose) return;
+    const h=[...prose.querySelectorAll('h2')].find(el=>parseChapterNum(el.textContent)===ch);
+    if(h) h.scrollIntoView({behavior:'smooth',block:'start'}); /* scroll-margin-top:78px offsets the fixed topbar */
   }
 
   function trackScroll(){ const f=()=>{const h=document.documentElement.scrollHeight-innerHeight;progBar.style.width=(h>0?Math.min(1,scrollY/h):0)*100+'%';}; f(); addEventListener('scroll',f,{passive:true}); }

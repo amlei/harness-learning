@@ -2,7 +2,7 @@
 
 *作者：Amlei　·　更新时间：2026-08-09*
 
-> 大模型的生成是增量式的——token 逐个吐出，首字延迟（TTFT）与总吞吐同等重要。若编排框架只能在"整段消息就绪"后才向下游传递，流式优势在第一个节点就被截断。Eino 把"流"在 `schema` 层就定义为基础数据类型，使流能在图编排的节点间端到端透传。README 所称的 "automatically handles streaming throughout orchestration: concatenating, boxing, merging, copying streams"，其实现落点正在本篇与[第六篇·第 3 章 节点间的流编排](part-06-state.md)。
+> 大模型的生成是增量式的——token 逐个吐出，首字延迟（TTFT）与总吞吐同等重要。若编排框架只能在"整段消息就绪"后才向下游传递，流式优势在第一个节点就被截断。Eino 把"流"在 `schema` 层就定义为基础数据类型，使流能在图编排的节点间端到端透传。README 所称的 "automatically handles streaming throughout orchestration: concatenating, boxing, merging, copying streams"，其实现落点正在本篇与[第六篇·第 3 章 节点间的流编排](part-06-state.md#第3章)。
 >
 > 本篇只讲**流原语本身**：一个流如何收发、复制、合并、塌缩、转换。至于这些流在图节点边界如何被装箱/拆箱、如何与四种执行范式桥接，见[第六篇](part-06-state.md)。
 
@@ -95,7 +95,7 @@ type streamItem[T any] struct { chunk T; err error }
 
 `concatFuncs` 在进程初始化时由 `schema/message.go:40-46` 注册了消息相关类型（`ConcatMessages`、`ConcatMessageArray`、`ConcatAgenticMessages`、`ConcatToolResults`），数值/布尔等用 `useLast`（`concat.go:49`，取最后一个）。字符串走 `concatStrings`，用 `strings.Builder` 一次预分配拼接（`concat.go:53`）。用户可通过 `compose.RegisterStreamChunkConcatFunc[T]`（`stream_concat.go:44`）扩展自定义类型。
 
-> **concat 与 merge 的语义边界**：`concat` 是"同字段累加"（如 string 拼接、message 多段内容合并），服务于流式分片的合拢；`merge`（见[第 5 章](part-03-streaming.md)）是"多节点输出按字段合并"，服务于图 fan-in，且对重复 key 报错而非累加。`concatMaps`（`concat.go:113`）对同一 key 的多个值做"递归 concat"，而 `mergeMap`（`internal/merge.go:62`）对重复 key 直接报错——二者用于不同图场景，不可混淆。
+> **concat 与 merge 的语义边界**：`concat` 是"同字段累加"（如 string 拼接、message 多段内容合并），服务于流式分片的合拢；`merge`（见[第 5 章](part-03-streaming.md#第5章)）是"多节点输出按字段合并"，服务于图 fan-in，且对重复 key 报错而非累加。`concatMaps`（`concat.go:113`）对同一 key 的多个值做"递归 concat"，而 `mergeMap`（`internal/merge.go:62`）对重复 key 直接报错——二者用于不同图场景，不可混淆。
 
 ---
 
@@ -234,13 +234,13 @@ select 的优化在 `schema/select.go`：
 2. 途中若经过只接受单值的节点，会触发 `concatStreamReader`（`stream_concat.go:50`）把流吃成单值再继续——此时该节点成为流式管道的"瓶颈点"。compose 用"伪流"在其下游恢复流形态，但 TTFT（首字延迟）已丢失（`schema/doc.go:70-75`）。
 3. branch 节点（如 react 判断是否调工具）会消费一份流副本（`Copy`），不影响主路径继续流动。
 
-节点边界处的装箱/拆箱与四范式桥接的具体机制，见[第六篇·第 3 章](part-06-state.md)。
+节点边界处的装箱/拆箱与四范式桥接的具体机制，见[第六篇·第 3 章](part-06-state.md#第3章)。
 
 ---
 
 ## 第 8 章　为何如此设计：权衡的总账
 
-1. **为何不用现成 channel，要再造一套 `StreamReader/Writer`**：原生 channel 缺三样东西——(a) 明确的"单生产者 / 单消费者 + EOF"契约；(b) 取消回传（接收端 `Close` 时 `Send` 能立刻知道）；(c) 类型安全的 fan-out（`Copy`）与 fan-in（`Merge`）。Eino 用 `streamItem{chunk,err}` 把错误和 data 绑在同一帧（`stream.go:384`），用 `closed chan struct{}` 做取消握手，用五种 `readerType` 把"流的来源形态"保留为运行时可优化的信息（见[第 2 章](part-03-streaming.md)）。
+1. **为何不用现成 channel，要再造一套 `StreamReader/Writer`**：原生 channel 缺三样东西——(a) 明确的"单生产者 / 单消费者 + EOF"契约；(b) 取消回传（接收端 `Close` 时 `Send` 能立刻知道）；(c) 类型安全的 fan-out（`Copy`）与 fan-in（`Merge`）。Eino 用 `streamItem{chunk,err}` 把错误和 data 绑在同一帧（`stream.go:384`），用 `closed chan struct{}` 做取消握手，用五种 `readerType` 把"流的来源形态"保留为运行时可优化的信息（见[第 2 章](part-03-streaming.md#第2章)）。
 2. **Go 泛型与类型擦除的兼容**：`StreamReader[T]` 在 `schema` 层全泛型；`compose` 层用类型擦除的 `streamReader` 接口与 `streamReaderPacker[T]` 在节点边界做装箱/拆箱（见[第六篇](part-06-state.md)）。`internal/generic/generic.go:56` 的 `TypeOf[T]()` 用 `reflect.TypeOf((*T)(nil)).Elem()` 取类型做注册表 key——内部反射、边界泛型，是 Eino 一以贯之的取舍。
 3. **保留"构造形态"为运行时信息**：五种 `readerType` 不是为了花哨，而是让 `Merge`/`Copy` 等操作能"看穿"流的来源、避免无谓地起 channel 和 goroutine。`arrayReader` 的零拷贝、`multiStreamReader` 的展开，都是这一设计带来的常数级优化。
 4. **select 的 5 路阈值**：手写展开 select（`select.go:22-72`）规避反射开销，仅在超过 5 路时退回 `reflect.Select`。这是"快路径手工优化、慢路径通用兜底"的典型工程取舍。

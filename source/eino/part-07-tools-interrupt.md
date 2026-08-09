@@ -12,7 +12,7 @@
 
 ### 1.1　节点构造：从 BaseTool 到可执行端点
 
-`ToolsNode`（`tool_node.go:79`）持有四类端点：`InvokableTool`、`StreamableTool`，以及面向多模态的 `EnhancedInvokableTool`/`EnhancedStreamableTool`（接口层级见[第四篇·第 4 章](part-04-components.md)）。`NewToolNode`（`:238`）将 `ToolsNodeConfig`（`:183`）转换为内部 `toolsTuple`（`:316`），核心转换函数是 `convTools`（`:489`）。
+`ToolsNode`（`tool_node.go:79`）持有四类端点：`InvokableTool`、`StreamableTool`，以及面向多模态的 `EnhancedInvokableTool`/`EnhancedStreamableTool`（接口层级见[第四篇·第 4 章](part-04-components.md#第4章)）。`NewToolNode`（`:238`）将 `ToolsNodeConfig`（`:183`）转换为内部 `toolsTuple`（`:316`），核心转换函数是 `convTools`（`:489`）。
 
 `convTools` 逐个 `BaseTool` 做四件事：(1) `bt.Info(ctx)` 取 `ToolInfo`；(2) 通过类型断言判定该工具实现了哪几种接口，并对每种接口用 `wrapToolCall`/`wrapStreamToolCall`/`wrapEnhancedInvokableToolCall`/`wrapEnhancedStreamableToolCall`（`:576-650`）包装成端点；(3) 若仅实现其中一种调用范式，则用 `invokableToStreamable`/`streamableToInvokable`（`:700-722`）补全另一种，使 `Invoke` 与 `Stream` 两条路径都能工作；(4) 按 `parseExecutorInfoFromComponent`（`:522`）记录回调处理，据此决定是否再套一层 `invokableToolWithCallback`（`:652`）以注入回调切面。
 
@@ -23,13 +23,13 @@
 1. **取选项与元组**：`getToolsNodeOptions`（`:1278`）解析调用级选项；若调用方通过 `WithToolList`/`WithToolAliases`（`:56-69`）覆盖了工具列表或别名，则用 `buildTupleFromOpts`（`:1020`）现场重建 `toolsTuple`，否则沿用编译期元组。这支撑了"同一节点在不同调用中用不同动态工具集"。
 2. **生成任务**：`genToolCallTasks`（`:777`）校验入参必须是 `Assistant` 角色且含 `ToolCalls`（`:780`），随后为每条 `tool_call` 构造任务，先做参数别名重映射（`:845`），再可选地走 `ToolArgumentsHandler` 做参数预处理，最后挂上对应端点；遇到工具名不存在时，若无 `UnknownToolsHandler` 直接报错，否则用 `newUnknownToolTask`（`:868`）兜底——这是处理 LLM 工具名幻觉的逃生通道。
 3. **调度**：默认 `parallelRunToolCall`（`:985`），仅当 `ExecuteSequentially=true` 才走 `sequentialRunToolCall`（`:973`）。并发实现有细节：**首条任务在主 goroutine 同步执行**（`:1012`），其余起 goroutine 并用 `sync.WaitGroup` 等待（`:994`）；每个 worker 都 `recover` 并把 panic 转成 `safe.NewPanicErr`（`:1002`），避免一个工具崩溃拖垮整批。
-4. **回拼**：`Invoke` 把每个结果按原顺序构造 `schema.ToolMessage`（`:1134`）；`Stream` 则用 `schema.StreamReaderWithConvert`（`:1259`）把每个工具的流映射到"对应槽位的 Message"，最后 `schema.MergeStreamReaders`（`:1270`）合并（见[第三篇·第 5 章](part-03-streaming.md)）。
+4. **回拼**：`Invoke` 把每个结果按原顺序构造 `schema.ToolMessage`（`:1134`）；`Stream` 则用 `schema.StreamReaderWithConvert`（`:1259`）把每个工具的流映射到"对应槽位的 Message"，最后 `schema.MergeStreamReaders`（`:1270`）合并（见[第三篇·第 5 章](part-03-streaming.md#第5章)）。
 
 ### 1.3　AgenticToolsNode：面向 agent 的适配外壳
 
 `AgenticToolsNode`（`agentic_tools_node.go:40`）只是 `ToolsNode` 的一层协议适配：内部持有 `inner *ToolsNode`（`:41`），`Invoke`/`Stream`（`:44/52`）把入参 `*schema.AgenticMessage` 经 `agenticMessageToToolCallMessage`（`:61`）压成经典 `*schema.Message`（从 `ContentBlockTypeFunctionToolCall` 抽出 `ToolCall`），交给 `inner`；返回时再用 `toolMessageToAgenticMessage`（`:82`）把 `ToolMessage` 重新包成带 `ContentBlockTypeFunctionToolResult` 的 `AgenticMessage`。
 
-其意义在于：新版 agent 循环使用结构化 `ContentBlock`（见[第二篇·第 3 章](part-02-schema.md)），而经典 ToolsNode 的调度/并发/中断逻辑无需重写，靠这层无状态转换即可复用。
+其意义在于：新版 agent 循环使用结构化 `ContentBlock`（见[第二篇·第 3 章](part-02-schema.md#第3章)），而经典 ToolsNode 的调度/并发/中断逻辑无需重写，靠这层无状态转换即可复用。
 
 ### 1.4　工具别名（ToolAlias）机制
 
@@ -55,11 +55,11 @@ compose 层暴露三档中断 API（`interrupt.go`）：
 
 ### 2.2　中断如何冒泡到 Runnable 边界
 
-中断信号以 error 形式从工具/节点向上返回。在图的运行循环 `runner.run`（`graph_run.go`，见[第五篇·第 4 章](part-05-compose.md)）中，每轮 `tm.wait()` 拿到 completedTasks 后，`resolveInterruptCompletedTasks`（`graph_run.go:457`）逐个分类：error 若是 `*subGraphInterruptError`（子图带回的内嵌 checkpoint），记入 `tempInfo.subGraphInterrupts`；若是 `*core.InterruptSignal`，把节点加入 `interruptRerunNodes` 并把 info 存入 `interruptRerunExtra`；其余非中断 error 才是真正的失败。
+中断信号以 error 形式从工具/节点向上返回。在图的运行循环 `runner.run`（`graph_run.go`，见[第五篇·第 4 章](part-05-compose.md#第4章)）中，每轮 `tm.wait()` 拿到 completedTasks 后，`resolveInterruptCompletedTasks`（`graph_run.go:457`）逐个分类：error 若是 `*subGraphInterruptError`（子图带回的内嵌 checkpoint），记入 `tempInfo.subGraphInterrupts`；若是 `*core.InterruptSignal`，把节点加入 `interruptRerunNodes` 并把 info 存入 `interruptRerunExtra`；其余非中断 error 才是真正的失败。
 
 分类完成后，由两条路径构造检查点并终止本轮运行：
 
-- `handleInterrupt`（`graph_run.go:502`）：处理"简单中断"。它把当前 `channels`、待执行任务的 `Inputs`、深拷贝的 `State`（`deepCopyState`，`:572`，用序列化做深拷贝——见[第六篇·第 1 章](part-06-state.md)）打包成 `checkpoint`，再用 `core.SignalToPersistenceMaps`（`internal/core/interrupt.go:327`）把信号树展平为 `InterruptID2Addr`/`InterruptID2State` 两个 map 存入 checkpoint。若是子图则返回 `*subGraphInterruptError`（内嵌 cp）；若是顶层图且有 `checkPointID`，则 `checkPointer.set` 落盘，并返回 `*interruptError`（内含 `InterruptContexts`）。
+- `handleInterrupt`（`graph_run.go:502`）：处理"简单中断"。它把当前 `channels`、待执行任务的 `Inputs`、深拷贝的 `State`（`deepCopyState`，`:572`，用序列化做深拷贝——见[第六篇·第 1 章](part-06-state.md#第1章)）打包成 `checkpoint`，再用 `core.SignalToPersistenceMaps`（`internal/core/interrupt.go:327`）把信号树展平为 `InterruptID2Addr`/`InterruptID2State` 两个 map 存入 checkpoint。若是子图则返回 `*subGraphInterruptError`（内嵌 cp）；若是顶层图且有 `checkPointID`，则 `checkPointer.set` 落盘，并返回 `*interruptError`（内含 `InterruptContexts`）。
 - `handleInterruptWithSubGraphAndRerunNodes`（`:598`）：处理"复合中断"——同时存在子图中断与重跑节点。它先把非中断任务正常 forward 到下游 channel，再为子图中断节点设置 `SkipPreHandler=true`（恢复时不重跑 pre-handler），把它们的中嵌 checkpoint 挂到 `cp.SubGraphs`，把重跑节点的原 input 写入 `cp.Inputs`。这种"父图 + 嵌套子图 checkpoint"的结构，让任意深度的图嵌套都能逐层恢复。
 
 ### 2.3　恢复协议：地址驱动的定向续跑
@@ -118,7 +118,7 @@ sequenceDiagram
 |---|---|
 | `Channels` | 各 channel（dag/pregel）的当前值，即图的"数据面" |
 | `Inputs` | 待执行节点的入参，恢复时直接喂入而无需重算 pre-handler |
-| `State` | 图级状态（见[第六篇·第 1 章](part-06-state.md)）的深拷贝 |
+| `State` | 图级状态（见[第六篇·第 1 章](part-06-state.md#第1章)）的深拷贝 |
 | `SkipPreHandler` | 哪些节点恢复时跳过 pre-handler |
 | `RerunNodes` | 需要重跑的节点列表 |
 | `SubGraphs` | 嵌套子图的 checkpoint，支持任意深度 |

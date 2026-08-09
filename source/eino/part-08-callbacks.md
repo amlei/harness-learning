@@ -22,7 +22,7 @@
 | `TimingOnStartWithStreamInput` | 输入本身是流（Collect/Transform） | `*schema.StreamReader[CallbackInput]` 的副本 |
 | `TimingOnEndWithStreamOutput` | 输出是流（Stream/Transform） | `*schema.StreamReader[CallbackOutput]` 的副本 |
 
-这套时机的本质是：**把组件调用形状（Invoke / Stream / Collect / Transform，见[第三篇·第 7 章](part-03-streaming.md)与[第六篇·第 3 章](part-06-state.md)）与可观测性形状解耦**。无论组件是同步还是流式，handler 作者都面对同一组语义钩子，只是流式形态多一份 stream 副本。
+这套时机的本质是：**把组件调用形状（Invoke / Stream / Collect / Transform，见[第三篇·第 7 章](part-03-streaming.md#第7章)与[第六篇·第 3 章](part-06-state.md#第3章)）与可观测性形状解耦**。无论组件是同步还是流式，handler 作者都面对同一组语义钩子，只是流式形态多一份 stream 副本。
 
 ### 1.2　三种粒度的挂载与继承
 
@@ -55,10 +55,10 @@ type Handler interface {
 
 两个关键设计：
 
-- **`CallbackInput`/`CallbackOutput` 是 `any`**（`internal/callbacks/interface.go:34`）。具体类型由各 component 包定义（如 `*model.CallbackInput`，见[第四篇·第 7 章](part-04-components.md)），用户通过 `model.ConvCallbackInput(in)` 安全转型，类型不匹配返回 `nil`（`callbacks/interface.go:43`）。这让 Handler 接口能跨越所有组件类型而不退化成 `any` 大杂烩。
+- **`CallbackInput`/`CallbackOutput` 是 `any`**（`internal/callbacks/interface.go:34`）。具体类型由各 component 包定义（如 `*model.CallbackInput`，见[第四篇·第 7 章](part-04-components.md#第7章)），用户通过 `model.ConvCallbackInput(in)` 安全转型，类型不匹配返回 `nil`（`callbacks/interface.go:43`）。这让 Handler 接口能跨越所有组件类型而不退化成 `any` 大杂烩。
 - **每个方法返回 `context.Context`**。同一 handler 的 `OnStart` 返回的 ctx 会被传给同 handler 的 `OnEnd`（`interface.go:67`），实现"OnStart 打时间戳 → OnEnd 算耗时"的状态传递。但**不同 handler 之间不保证顺序、也不串 ctx**（`doc.go:106`）——共享状态要塞进最外层 ctx 的并发安全变量。
 
-`RunInfo`（`internal/callbacks/interface.go:26`）描述触发者身份：`Name`（节点名）、`Type`（实现标识如 "OpenAI"，来自[第四篇·第 2 章](part-04-components.md)的 `Typer`）、`Component`（类别常量如 `ComponentOfChatModel`）。文档强调 RunInfo **可能为 nil**（`interface.go:23`），handler 必须防御。
+`RunInfo`（`internal/callbacks/interface.go:26`）描述触发者身份：`Name`（节点名）、`Type`（实现标识如 "OpenAI"，来自[第四篇·第 2 章](part-04-components.md#第2章)的 `Typer`）、`Component`（类别常量如 `ComponentOfChatModel`）。文档强调 RunInfo **可能为 nil**（`interface.go:23`），handler 必须防御。
 
 ### 2.2　TimingChecker：可选的性能短路
 
@@ -127,7 +127,7 @@ for i, handler := range handlers {
 return ctx, inOuts[len(inOuts)-1]          // 最后一份还给组件继续消费
 ```
 
-`cpy` 即 `StreamReader.Copy`（见[第三篇·第 4 章](part-03-streaming.md)的共享惰性链表）。由此推出文档反复强调的陷阱（`doc.go:112`）：**N 个 handler 注册了流式时机，stream 被复制 N+1 份；只要有一个 handler 不 `Close()` 自己那份，原始 stream 无法释放，整条流水线的 goroutine 全部泄漏。** `handler_builder.go:139` 的注释因此明确要求 `defer input.Close()`。
+`cpy` 即 `StreamReader.Copy`（见[第三篇·第 4 章](part-03-streaming.md#第4章)的共享惰性链表）。由此推出文档反复强调的陷阱（`doc.go:112`）：**N 个 handler 注册了流式时机，stream 被复制 N+1 份；只要有一个 handler 不 `Close()` 自己那份，原始 stream 无法释放，整条流水线的 goroutine 全部泄漏。** `handler_builder.go:139` 的注释因此明确要求 `defer input.Close()`。
 
 ### 3.5　非流输出的多副本：BuildOnEndHandleWithCopy
 
@@ -135,13 +135,13 @@ return ctx, inOuts[len(inOuts)-1]          // 最后一份还给组件继续消�
 
 ### 3.6　各组件的 callback_extra 扩展点
 
-每个 component 包都定义自己的强类型 `CallbackInput`/`CallbackOutput` 及 `Conv*` 转型函数（见[第四篇·第 7 章](part-04-components.md)）。以 model 为例：`CallbackOutput` 带 `Message` 和 **`TokenUsage`**（含 `PromptTokens`/`CompletionTokens`/`ReasoningTokens`/`CachedTokens`）。这是 token 计费、reasoning 追踪的数据源。`ConvCallbackInput` 能从 `*model.CallbackInput` 或裸 `[]*schema.Message` 两种形态构造——前者对应"组件自管 callback"，后者对应"图节点托管 callback"。这套"组件包自定义 IO 类型 + Conv 双向兼容"模式，让同一份切面机制既能在组件内部以强类型触发，也能在图边界以接口类型触发。
+每个 component 包都定义自己的强类型 `CallbackInput`/`CallbackOutput` 及 `Conv*` 转型函数（见[第四篇·第 7 章](part-04-components.md#第7章)）。以 model 为例：`CallbackOutput` 带 `Message` 和 **`TokenUsage`**（含 `PromptTokens`/`CompletionTokens`/`ReasoningTokens`/`CachedTokens`）。这是 token 计费、reasoning 追踪的数据源。`ConvCallbackInput` 能从 `*model.CallbackInput` 或裸 `[]*schema.Message` 两种形态构造——前者对应"组件自管 callback"，后者对应"图节点托管 callback"。这套"组件包自定义 IO 类型 + Conv 双向兼容"模式，让同一份切面机制既能在组件内部以强类型触发，也能在图边界以接口类型触发。
 
 ---
 
 ## 第 4 章　两条注入路径：组件自管 vs 框架托管
 
-关键洞察：**框架并不总接管 callback 触发**。组件可以选择"自己埋点"。开关是 `components.Checker`（见[第四篇·第 2 章](part-04-components.md)）。`compose/graph_node.go:160` 的 `parseExecutorInfoFromComponent` 在建图时探测：组件实现 `Checker` 且 `IsCallbacksEnabled()` 返回 `true`，则框架**信任组件自己触发 callback**。
+关键洞察：**框架并不总接管 callback 触发**。组件可以选择"自己埋点"。开关是 `components.Checker`（见[第四篇·第 2 章](part-04-components.md#第2章)）。`compose/graph_node.go:160` 的 `parseExecutorInfoFromComponent` 在建图时探测：组件实现 `Checker` 且 `IsCallbacksEnabled()` 返回 `true`，则框架**信任组件自己触发 callback**。
 
 ### 4.1　路径 A：组件自管
 
@@ -220,7 +220,7 @@ flowchart TD
 3. **性能开销的两道阀门**：(a) `TimingChecker` 在 `On` 里过滤掉不需要的 handler；(b) 流复制延迟到必要时机——只有真正有 handler `Needed` 流式时机时才 `Copy(N+1)`，零 handler 时直接返回原流。主要开销来自流式时机的 stream 扇出，故文档反复强调"handler 不需要的 timing 就别注册"。
 4. **洋葱模型的逆/正序**：`hs=[local, global]`，OnStart 逆序（全局先）、OnEnd 正序（全局后）。这让全局 handler（如 OpenTelemetry trace）自然成为最外层包裹，进入时开 span、退出时关 span。
 5. **不要修改 Input/Output**（`doc.go:117`）：下游节点和其他 handler 共享同一指针（非深拷贝），并发图执行下修改会触发 data race。需要派生应自建副本。
-6. **流中错误不进 OnError**（`interface.go:121`、`doc.go:123`）：`StreamReader.Recv` 返回的 error 不会被路由到 `OnError`——它只对组件方法**返回值**的 error 触发。流内错误要在消费端自己处理。这是"带内传错"流设计（见[第三篇·第 2 章](part-03-streaming.md)）与切面的边界。
+6. **流中错误不进 OnError**（`interface.go:121`、`doc.go:123`）：`StreamReader.Recv` 返回的 error 不会被路由到 `OnError`——它只对组件方法**返回值**的 error 触发。流内错误要在消费端自己处理。这是"带内传错"流设计（见[第三篇·第 2 章](part-03-streaming.md#第2章)）与切面的边界。
 
 ---
 

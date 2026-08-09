@@ -69,9 +69,9 @@ Eino 的全部设计都围绕三个支柱展开，后续各篇按此组织：
 
 Eino 把 Go 1.18 的两个特性当作设计 DNA：**泛型**与**接口的隐式实现**。
 
-**泛型**让编排框架能在编译期对类型做强约束——编排的本质是"把若干签名各异的组件按类型串联"，若退化为 `any`+反射，类型错误只能运行期暴露。Eino 通过泛型把大量类型检查前移到编译期：`Runnable[I,O]`、`StreamReader[T]`、`Graph[*In,*Out]` 都是泛型类型。代价是 Go 1.18 泛型不支持"方法的类型参数"，故 Eino 用一条"**编译期泛型、运行期类型擦除**"的边界折中——构造期单态化生成闭包、存入 `any` 字段，运行期调度器只持有 `any`（见[第十二篇·第 6 章](part-12-internal.md)）。`go.mod:3` 的 `go 1.18` 也连带决定了 `gslice`/`gmap` 必须自造（1.21 的 `slices`/`maps` 标准包不可用，见[第十二篇·第 1 章](part-12-internal.md)）。
+**泛型**让编排框架能在编译期对类型做强约束——编排的本质是"把若干签名各异的组件按类型串联"，若退化为 `any`+反射，类型错误只能运行期暴露。Eino 通过泛型把大量类型检查前移到编译期：`Runnable[I,O]`、`StreamReader[T]`、`Graph[*In,*Out]` 都是泛型类型。代价是 Go 1.18 泛型不支持"方法的类型参数"，故 Eino 用一条"**编译期泛型、运行期类型擦除**"的边界折中——构造期单态化生成闭包、存入 `any` 字段，运行期调度器只持有 `any`（见[第十二篇·第 6 章](part-12-internal.md#第6章)）。`go.mod:3` 的 `go 1.18` 也连带决定了 `gslice`/`gmap` 必须自造（1.21 的 `slices`/`maps` 标准包不可用，见[第十二篇·第 1 章](part-12-internal.md#第1章)）。
 
-**接口的隐式实现**（结构化类型）让"接口在本仓、实现在外"成为可能：eino-ext 的 `openai.ChatModel` 只要导入 `components/model` 与 `schema` 即可被 compose 透明消费，无需 `implements` 声明（见[第四篇·第 1 章](part-04-components.md)）。
+**接口的隐式实现**（结构化类型）让"接口在本仓、实现在外"成为可能：eino-ext 的 `openai.ChatModel` 只要导入 `components/model` 与 `schema` 即可被 compose 透明消费，无需 `implements` 声明（见[第四篇·第 1 章](part-04-components.md#第1章)）。
 
 ---
 
@@ -86,11 +86,11 @@ Eino 最值得先建立的全局认知，是**四种流范式**（`schema/doc.go
 | **Collect** | 流 | 单值 | 分支节点（读完首 chunk 再决策） |
 | **Transform** | 流 | 流 | 流式加工 |
 
-组件只需实现自己擅长的那一两种范式，框架在节点边界**自动桥接**不匹配的范式：上游出单值、下游要流 → 包成单 chunk 的"伪流"；上游出流、下游要单值 → `concatStreamReader` 把流塌缩成单值（见[第六篇·第 3 章](part-06-state.md)）。这就是 README 所称 "automatically handles streaming throughout orchestration" 的实现落点。
+组件只需实现自己擅长的那一两种范式，框架在节点边界**自动桥接**不匹配的范式：上游出单值、下游要流 → 包成单 chunk 的"伪流"；上游出流、下游要单值 → `concatStreamReader` 把流塌缩成单值（见[第六篇·第 3 章](part-06-state.md#第3章)）。这就是 README 所称 "automatically handles streaming throughout orchestration" 的实现落点。
 
-流的底层是 `schema/stream.go` 的 `StreamReader[T]`/`StreamWriter[T]`——一对由 `Pipe[T](cap)` 创建的读写双端，read-once、必须 Close，背后由五种 `readerType`（`stream`/`array`/`multiStream`/`withConvert`/`child`）物理实现（见[第三篇·第 2 章](part-03-streaming.md)）。流的三种核心操作是 **concat**（塌缩成单值，[第三篇·第 3 章](part-03-streaming.md)）、**copy**（fan-out 的共享惰性链表，[第三篇·第 4 章](part-03-streaming.md)）、**merge**（多路 fan-in，[第三篇·第 5 章](part-03-streaming.md)）。这套流模型是 Eino 区别于许多框架的招牌——它没有引入 RxGo/reactor 风格的重型库，而是直接复用 Go 原生 channel + 泛型。
+流的底层是 `schema/stream.go` 的 `StreamReader[T]`/`StreamWriter[T]`——一对由 `Pipe[T](cap)` 创建的读写双端，read-once、必须 Close，背后由五种 `readerType`（`stream`/`array`/`multiStream`/`withConvert`/`child`）物理实现（见[第三篇·第 2 章](part-03-streaming.md#第2章)）。流的三种核心操作是 **concat**（塌缩成单值，[第三篇·第 3 章](part-03-streaming.md#第3章)）、**copy**（fan-out 的共享惰性链表，[第三篇·第 4 章](part-03-streaming.md#第4章)）、**merge**（多路 fan-in，[第三篇·第 5 章](part-03-streaming.md#第5章)）。这套流模型是 Eino 区别于许多框架的招牌——它没有引入 RxGo/reactor 风格的重型库，而是直接复用 Go 原生 channel + 泛型。
 
-> **一处澄清**：`internal/channel.go` 的 `UnboundedChan[T]` **不承载 token 流**——核心流用 Go 原生带缓冲 channel，`UnboundedChan` 服务于调度/回调聚合（图任务就绪队列、adk 事件迭代器）。混淆二者会错判 Eino 的流模型（见[第三篇·第 6 章](part-03-streaming.md)与[第十二篇·第 3 章](part-12-internal.md)）。
+> **一处澄清**：`internal/channel.go` 的 `UnboundedChan[T]` **不承载 token 流**——核心流用 Go 原生带缓冲 channel，`UnboundedChan` 服务于调度/回调聚合（图任务就绪队列、adk 事件迭代器）。混淆二者会错判 Eino 的流模型（见[第三篇·第 6 章](part-03-streaming.md#第6章)与[第十二篇·第 3 章](part-12-internal.md#第3章)）。
 
 ---
 
@@ -98,12 +98,12 @@ Eino 最值得先建立的全局认知，是**四种流范式**（`schema/doc.go
 
 Eino 用两个子系统的分工来覆盖 LLM 应用的两类编排需求：
 
-- **`compose`（[第五篇](part-05-compose.md)）= 确定性编排**。开发者预先画好图，边、分支、并行、循环在编译期固定，运行期严格遵循。不确定性只来自 `Branch` 的条件函数返回值与循环图的超步迭代次数。正因确定性，compose 才能做到编译期类型检查（[第五篇·第 3 章](part-05-compose.md)的 `updateToValidateMap` 不动点推断）、拓扑环检测、可恢复的检查点中断。
+- **`compose`（[第五篇](part-05-compose.md)）= 确定性编排**。开发者预先画好图，边、分支、并行、循环在编译期固定，运行期严格遵循。不确定性只来自 `Branch` 的条件函数返回值与循环图的超步迭代次数。正因确定性，compose 才能做到编译期类型检查（[第五篇·第 3 章](part-05-compose.md#第3章)的 `updateToValidateMap` 不动点推断）、拓扑环检测、可恢复的检查点中断。
 - **`adk`（[第九篇](part-09-adk.md)）= 自主决策**。把"下一步做什么"交给 LLM——模型读对话历史、决定是否调工具、调哪个、何时收尾。框架只在每个回合里执行这个决定。
 
-二者的关系不是"替代"而是"复用"：**adk 的 ReAct 循环本身就是一张 compose.Graph**（`adk/react.go:354` 的 `newReact`，见[第九篇·第 4 章](part-09-adk.md)）——Init/ChatModel/CancelCheck/ToolNode 等节点加一条回边。因此 adk 天然复用 compose 的流式编排、状态注入（[第六篇](part-06-state.md)）、中断/checkpoint（[第七篇](part-07-tools-interrupt.md)）、回调切面（[第八篇](part-08-callbacks.md)）。
+二者的关系不是"替代"而是"复用"：**adk 的 ReAct 循环本身就是一张 compose.Graph**（`adk/react.go:354` 的 `newReact`，见[第九篇·第 4 章](part-09-adk.md#第4章)）——Init/ChatModel/CancelCheck/ToolNode 等节点加一条回边。因此 adk 天然复用 compose 的流式编排、状态注入（[第六篇](part-06-state.md)）、中断/checkpoint（[第七篇](part-07-tools-interrupt.md)）、回调切面（[第八篇](part-08-callbacks.md)）。
 
-调度模型上，compose 有两种执行模式（[第五篇·第 4 章](part-05-compose.md)）：**Pregel**（默认，AnyPredecessor 触发 + barrier 超步，支持循环，靠 `maxRunSteps` 兜底）与 **DAG**（Workflow/AllPredecessor + 流水，禁止循环，靠 `validateDAG` 编译期拒绝）。
+调度模型上，compose 有两种执行模式（[第五篇·第 4 章](part-05-compose.md#第4章)）：**Pregel**（默认，AnyPredecessor 触发 + barrier 超步，支持循环，靠 `maxRunSteps` 兜底）与 **DAG**（Workflow/AllPredecessor + 流水，禁止循环，靠 `validateDAG` 编译期拒绝）。
 
 ---
 
@@ -111,7 +111,7 @@ Eino 用两个子系统的分工来覆盖 LLM 应用的两类编排需求：
 
 围绕三大支柱，Eino 有四套横切机制，它们是让框架"可观测、可恢复、可扩展"的关键：
 
-**状态（[第六篇·第 1 章](part-06-state.md)）**：图的累积状态是**挂在 `context.Context` 上的可变单例 + mutex + 用户处理器原地改写**，**不是** LangGraph 那种"每字段 reducer、每轮自动 reduce"的模型。所谓"每轮 reduce"真正发生在 `channel.get` 里多前驱 fan-in 的 `mergeValues`——reduce 的对象是节点输出而非状态本身。字段映射（[第六篇·第 2 章](part-06-state.md)）让节点 I/O 类型不必精确匹配。
+**状态（[第六篇·第 1 章](part-06-state.md#第1章)）**：图的累积状态是**挂在 `context.Context` 上的可变单例 + mutex + 用户处理器原地改写**，**不是** LangGraph 那种"每字段 reducer、每轮自动 reduce"的模型。所谓"每轮 reduce"真正发生在 `channel.get` 里多前驱 fan-in 的 `mergeValues`——reduce 的对象是节点输出而非状态本身。字段映射（[第六篇·第 2 章](part-06-state.md#第2章)）让节点 I/O 类型不必精确匹配。
 
 **中断/恢复/检查点（[第七篇](part-07-tools-interrupt.md)）**：任意工具或节点能暂停执行、等待人工输入、从断点续跑。中断以 error 形式抛出（三档：`Interrupt`/`StatefulInterrupt`/`CompositeInterrupt`），冒泡到 Runnable 边界，由地址驱动的定向恢复续跑。检查点用自研类型标签 JSON 序列化整个图状态（含状态单例的深拷贝），支持版本迁移。
 
@@ -142,11 +142,11 @@ Eino 用两个子系统的分工来覆盖 LLM 应用的两类编排需求：
 1. **接口在本仓、实现在外**：core 零外部 SDK 依赖、永远轻量稳定；provider 独立演进发布；避免环形依赖与"上帝包"。代价是用户要跨两个仓库（`eino` + `eino-ext`）拼装完整应用。
 2. **泛型优先、反射兜底**：把类型错误前移到编译期，只在"类型擦除边界"（图编排动态分发、检查点序列化）回落到反射。代价是 Go 1.18 泛型能力受限（`implSpecificOptFn any` 配类型断言的迂回）。
 3. **确定性编排（compose）与自主决策（adk）分治**：各擅其长——compose 可预测、可类型检查、可恢复；adk 灵活、可处理开放任务。adk 复用 compose 作执行引擎，二者非替代。
-4. **流为一等公民**：把流在 `schema` 层就定义为基础数据类型，使流能端到端透传。代价是 `StreamReader` 的 read-once/必须 Close 是隐性契约负担（见[第三篇·第 2 章](part-03-streaming.md)）。
+4. **流为一等公民**：把流在 `schema` 层就定义为基础数据类型，使流能端到端透传。代价是 `StreamReader` 的 read-once/必须 Close 是隐性契约负担（见[第三篇·第 2 章](part-03-streaming.md#第2章)）。
 5. **状态用可变单例而非 reducer**：实现轻、对 Go 开发者心智直接、避免每轮深拷贝；代价是回放/分叉要靠 checkpoint 显式 `deepCopyState`。
-6. **adk 用事件迭代器而非回调**：调用方控制节奏、天然支持背压与流式；代价是生产端需 goroutine + 无界 channel（见[第九篇·第 2 章](part-09-adk.md)）。
-7. **多代理收敛到 agent-as-tool**：源码里一半的转移相关 API 挂着 `NOT RECOMMENDED`，官方路线从"全上下文转移/workflow"收敛到"agent-as-tool"（见[第九篇·第 9 章](part-09-adk.md)与[第十一篇](part-11-multiagent.md)）。
-8. **自研类型标签 JSON 序列化**：换取 checkpoint 可读、可迁移、跨版本可控；代价是类型必须显式注册、性能不如二进制（见[第十二篇·第 4 章](part-12-internal.md)）。
+6. **adk 用事件迭代器而非回调**：调用方控制节奏、天然支持背压与流式；代价是生产端需 goroutine + 无界 channel（见[第九篇·第 2 章](part-09-adk.md#第2章)）。
+7. **多代理收敛到 agent-as-tool**：源码里一半的转移相关 API 挂着 `NOT RECOMMENDED`，官方路线从"全上下文转移/workflow"收敛到"agent-as-tool"（见[第九篇·第 9 章](part-09-adk.md#第9章)与[第十一篇](part-11-multiagent.md)）。
+8. **自研类型标签 JSON 序列化**：换取 checkpoint 可读、可迁移、跨版本可控；代价是类型必须显式注册、性能不如二进制（见[第十二篇·第 4 章](part-12-internal.md#第4章)）。
 
 ---
 

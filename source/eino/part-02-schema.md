@@ -55,7 +55,7 @@ type Message struct {
 
 ### 2.3　`Extra map[string]any`：provider 适配的逃生舱
 
-当某个 provider 返回了框架类型表达不了的私有字段（如 OpenAI 的 `service_tier`、Gemini 的 `grounding`），实现方可以塞进 `Extra`，不污染核心结构。这一思想在 `AgenticMessage` 里被升级为"按 provider 分槽 + 通用 `Extension any`"（见[第 3 章](part-02-schema.md)）。
+当某个 provider 返回了框架类型表达不了的私有字段（如 OpenAI 的 `service_tier`、Gemini 的 `grounding`），实现方可以塞进 `Extra`，不污染核心结构。这一思想在 `AgenticMessage` 里被升级为"按 provider 分槽 + 通用 `Extension any`"（见[第 3 章](part-02-schema.md#第3章)）。
 
 四种 Role 由 `RoleType`（`message.go:107-119`）枚举：`Assistant`、`User`、`System`、`Tool`。对应四个构造器 `SystemMessage / AssistantMessage / UserMessage / ToolMessage`（`:1104-1155`）。
 
@@ -134,7 +134,7 @@ type ToolCall struct {
 
 ### 5.4　流合并：Concat 函数族与注册机制
 
-`message.go:39-47` 的 `init` 把 `ConcatMessages / ConcatMessageArray / ConcatAgenticMessages / ConcatToolResults` 通过 `internal.RegisterStreamChunkConcatFunc` 注册到全局表，按 `reflect.Type` 索引。`compose` 编排层在把 `StreamReader[T]` 降级成单值 `T` 时，通过 `GetConcatFunc(typ)` 查表拿到合并函数（见[第三篇·第 3 章](part-03-streaming.md)）。**schema 负责定义"两个 chunk 怎么拼成一个"，流机制负责"何时拼"**——这是 schema 与流机制之间的耦合点。
+`message.go:39-47` 的 `init` 把 `ConcatMessages / ConcatMessageArray / ConcatAgenticMessages / ConcatToolResults` 通过 `internal.RegisterStreamChunkConcatFunc` 注册到全局表，按 `reflect.Type` 索引。`compose` 编排层在把 `StreamReader[T]` 降级成单值 `T` 时，通过 `GetConcatFunc(typ)` 查表拿到合并函数（见[第三篇·第 3 章](part-03-streaming.md#第3章)）。**schema 负责定义"两个 chunk 怎么拼成一个"，流机制负责"何时拼"**——这是 schema 与流机制之间的耦合点。
 
 `ConcatMessages`（`:1643-1837`）的合并规则是逐字段策略：`Role/Name/ToolCallID` 首块非空即采纳、后续必须一致否则报错；`Content` 字符串拼接（预分配 `Grow`）；`ToolCalls` 交给 `concatToolCalls` 按 Index 合并；`ResponseMeta.TokenUsage` 各字段取最大值（流式 token 会累计）。`ConcatAgenticMessages`（`:901-1004`）则**禁止 streaming block 与 non-streaming block 混排**（`:936`、`:945`），流式块按 `StreamingMeta.Index` 分组、每组按类型分派到专门的 `concatXxx`。
 

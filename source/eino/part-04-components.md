@@ -60,7 +60,7 @@ type Checker interface {
 
 `types.go:64-87` 列出十种组件类别常量（`ComponentOfChatModel`、`ComponentOfTool`、`ComponentOfRetriever`、`ComponentOfLoader` 等）。这些字符串既是回调 `RunInfo` 的填充值，也是 compose 在 `toChatModelNode`/`toRetrieverNode` 等工厂（`compose/component_to_graph_node.go:49-167`）里标记节点种类的标签。
 
-> **一处废弃步调不一致（勘误）**：`model/interface.go:73` 标注 `ChatModel` 已 deprecated（并发不安全，见[第 3 章](part-04-components.md)），但 `components/types.go:72` 的 `ComponentOfChatModel` 常量无任何 deprecation 标记，且 compose 仍在 `component_to_graph_node.go:96` 大量使用该种类常量——接口与"种类标识"的废弃步调不一致。
+> **一处废弃步调不一致（勘误）**：`model/interface.go:73` 标注 `ChatModel` 已 deprecated（并发不安全，见[第 3 章](part-04-components.md#第3章)），但 `components/types.go:72` 的 `ComponentOfChatModel` 常量无任何 deprecation 标记，且 compose 仍在 `component_to_graph_node.go:96` 大量使用该种类常量——接口与"种类标识"的废弃步调不一致。
 
 ---
 
@@ -84,7 +84,7 @@ type BaseModel[M messageType] interface {
 }
 ```
 
-`messageType`（`:27-29`）是一个**密封类型约束（sealed constraint）**，只允许 `*schema.Message` 与 `*schema.AgenticMessage` 两种消息类型（见[第二篇·第 3 章](part-02-schema.md)）。通过类型参数化，同一套 `Generate/Stream` 契约同时服务传统对话模型与 Agentic 模型，而无需复制接口定义。历史兼容通过类型别名保留：`type BaseChatModel = BaseModel[*schema.Message]`（`:71`）、`type AgenticModel = BaseModel[*schema.AgenticMessage]`（`:109`）。
+`messageType`（`:27-29`）是一个**密封类型约束（sealed constraint）**，只允许 `*schema.Message` 与 `*schema.AgenticMessage` 两种消息类型（见[第二篇·第 3 章](part-02-schema.md#第3章)）。通过类型参数化，同一套 `Generate/Stream` 契约同时服务传统对话模型与 Agentic 模型，而无需复制接口定义。历史兼容通过类型别名保留：`type BaseChatModel = BaseModel[*schema.Message]`（`:71`）、`type AgenticModel = BaseModel[*schema.AgenticMessage]`（`:109`）。
 
 ### 3.2　输入输出与流式表达
 
@@ -135,7 +135,7 @@ Go interface 本质是方法集，Eino 把"做什么（Generate/Stream）"定义
 
 ### 4.2　tool.Info 与 schema.ToolInfo 的关系
 
-`Info()` 是**运行时方法**（可能因 ctx 而异、可能出错），它返回的 `schema.ToolInfo`（见[第二篇·第 4 章](part-02-schema.md)）才是**数据**：`Name`、`Desc`、`Extra`，以及嵌入式 `*ParamsOneOf`。`utils.InferTool`（`tool/utils/invokable_func.go:46`）从 Go 结构体 tag 自动反射出 `ParamsOneOf`（用 `eino-contrib/jsonschema` 的 `Reflector`），消除手写 schema 的样板。
+`Info()` 是**运行时方法**（可能因 ctx 而异、可能出错），它返回的 `schema.ToolInfo`（见[第二篇·第 4 章](part-02-schema.md#第4章)）才是**数据**：`Name`、`Desc`、`Extra`，以及嵌入式 `*ParamsOneOf`。`utils.InferTool`（`tool/utils/invokable_func.go:46`）从 Go 结构体 tag 自动反射出 `ParamsOneOf`（用 `eino-contrib/jsonschema` 的 `Reflector`），消除手写 schema 的样板。
 
 ### 4.3　工具被 LLM 调用的全链路
 
@@ -220,7 +220,7 @@ graph LR
 
 ### 7.3　流范式声明：提供哪些方法值
 
-Eino 的"流范式"声明（Invoke/Stream/Collect/Transform，见[第三篇·第 7 章](part-03-streaming.md)与[第六篇·第 3 章](part-06-state.md)）不在组件 interface 里加标记，而是在 compose 包装时通过**传递哪些方法值**来表达。`compose/component_to_graph_node.go:29` 的 `toComponentNode` 接收四个函数槽：`invoke`、`stream`、`collect`、`transform`。各组件工厂按需填槽：
+Eino 的"流范式"声明（Invoke/Stream/Collect/Transform，见[第三篇·第 7 章](part-03-streaming.md#第7章)与[第六篇·第 3 章](part-06-state.md#第3章)）不在组件 interface 里加标记，而是在 compose 包装时通过**传递哪些方法值**来表达。`compose/component_to_graph_node.go:29` 的 `toComponentNode` 接收四个函数槽：`invoke`、`stream`、`collect`、`transform`。各组件工厂按需填槽：
 
 - `toChatModelNode`（`:93`）：填 `Generate`（invoke）与 `Stream`（stream），collect/transform 为 nil。
 - `toRetrieverNode` / `toIndexerNode` / `toEmbeddingNode`（`:49-91`）：只填 invoke——这些组件不支持流式。

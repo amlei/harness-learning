@@ -48,24 +48,24 @@ Eino（读作 ['aino]）是 CloudWeGo（字节跳动）推出的 Go LLM 应用�
 大语言模型（Large Language Model）：输入一段文本（"提示"），输出一段文本（"回答"）。它是概率性的——同样输入可能得到不同输出。Eino 把"与 LLM 通话"抽象成 `ChatModel` 组件，输入输出都是 `Message`。
 
 **2. agent / 代理循环 / ReAct　·　主要出现于：[第九篇](part-09-adk.md)**
-agent 不是"一次问答"，而是一个**循环**：接收消息 → 调模型 → 若模型要求调用工具则执行工具、把结果送回模型 → 再调模型 → ……直到模型给出不再需要工具的最终回答。**ReAct**（Reason + Act）是这类循环的范式名——"推理一步、行动一步"交替。Eino 的 ReAct 循环本身就是一张 compose.Graph（[第九篇·第 4 章](part-09-adk.md)）。
+agent 不是"一次问答"，而是一个**循环**：接收消息 → 调模型 → 若模型要求调用工具则执行工具、把结果送回模型 → 再调模型 → ……直到模型给出不再需要工具的最终回答。**ReAct**（Reason + Act）是这类循环的范式名——"推理一步、行动一步"交替。Eino 的 ReAct 循环本身就是一张 compose.Graph（[第九篇·第 4 章](part-09-adk.md#第4章)）。
 
-**3. function calling / tool calling　·　主要出现于：[第四篇·第 4 章](part-04-components.md)、[第七篇](part-07-tools-interrupt.md)**
+**3. function calling / tool calling　·　主要出现于：[第四篇·第 4 章](part-04-components.md#第4章)、[第七篇](part-07-tools-interrupt.md)**
 现代大模型可以不直接"说话"，而是输出一个**结构化的工具调用请求**。宿主程序拦截这个请求、真正去执行（比如联网搜索、跑命令）、再把结果作为新消息喂回模型。模型 thus 能够"行动"。
 
 **4. token / 上下文窗口（context window）　·　主要出现于：[第十篇](part-10-middlewares.md)（摘要/归约）**
 模型每次调用的输入有**大小上限**，以 token 计（粗略地：1 token ≈ 4 个英文字符 ≈ 0.5–1 个汉字）。一轮对话积累的消息越多，越接近上限。超出则必须**压缩**（summarization/reduction 中间件）。"上下文窗口"就是这一上限。
 
-**5. 提示缓存 / prefix cache / KV cache　·　主要出现于：[第十篇·第 3 章](part-10-middlewares.md)（summarization/reduction 的 cache 友好设计）**
+**5. 提示缓存 / prefix cache / KV cache　·　主要出现于：[第十篇·第 3 章](part-10-middlewares.md#第3章)（summarization/reduction 的 cache 友好设计）**
 模型在生成回答前，要把整段输入"读"一遍，计算每个 token 的 Key/Value 张量（KV）。如果两次调用的**开头部分完全相同**，这部分 KV 可以**缓存复用**，大幅降低延迟与成本——这就是 prefix cache。正因如此，Eino 的多个中间件（reduction 的 `ClearAtLeastTokens`、dynamictool 的过滤警告）都刻意避免"小改写破坏缓存前缀"。
 
 **6. 流式 / streaming　·　主要出现于：[第三篇](part-03-streaming.md)（全书招牌）**
 模型生成是增量式的——token 逐个吐出，首字延迟（TTFT）与总吞吐同等重要。**流式**就是不等到整段就绪，边生成边向下游传递。Eino 把"流"在 `schema` 层就定义为基础数据类型，使流能在图编排的节点间端到端透传。
 
-**7. RAG（检索增强生成）　·　主要出现于：[第四篇·第 5 章](part-04-components.md)**
+**7. RAG（检索增强生成）　·　主要出现于：[第四篇·第 5 章](part-04-components.md#第5章)**
 Retrieval-Augmented Generation：先用查询从知识库检索相关文档，再把文档塞进提示喂给模型。Eino 的 RAG 管道由 Embedder（向量化）、Indexer（写库）、Retriever（检索）、Document（Loader/Transformer）四个组件契约拼装。
 
-**8. Go interface / 隐式实现（结构化类型）　·　主要出现于：[第四篇·第 1 章](part-04-components.md)**
+**8. Go interface / 隐式实现（结构化类型）　·　主要出现于：[第四篇·第 1 章](part-04-components.md#第1章)**
 Go 的 interface 是"方法集"契约：一个类型只要拥有 interface 列出的方法，就自动满足该 interface，**无需 `implements` 声明**。这让"接口在本仓、实现在外"成为可能——eino-ext 的实现只要导入接口与数据类型即可被消费。
 
 **9. Go 泛型 / 类型参数　·　主要出现于：[第十二篇](part-12-internal.md)、贯穿全书**
@@ -77,10 +77,10 @@ Go 的并发原语：**goroutine** 是轻量级线程，**channel** 是 goroutin
 **11. 图 / DAG / 拓扑排序　·　主要出现于：[第五篇](part-05-compose.md)**
 **图（Graph）** 由节点与边组成；**DAG**（有向无环图）是不含环的图，节点可按依赖关系排出线性顺序（**拓扑排序**，Kahn 算法）。Eino 的 compose 把组件编排成图；DAG 模式编译期用 Kahn 算法检测环。
 
-**12. Pregel / 超步（superstep）　·　主要出现于：[第五篇·第 4 章](part-05-compose.md)**
+**12. Pregel / 超步（superstep）　·　主要出现于：[第五篇·第 4 章](part-05-compose.md#第4章)**
 Google 提出的图计算模型：执行分成一轮轮"超步"，每轮所有节点并发处理、结束后 barrier 同步、再进下一轮。Eino 的 Pregel 模式用超步驱动循环图，靠 `maxRunSteps` 防死循环。
 
-**13. 类型擦除 / 反射（reflection）　·　主要出现于：[第十二篇·第 6 章](part-12-internal.md)**
+**13. 类型擦除 / 反射（reflection）　·　主要出现于：[第十二篇·第 6 章](part-12-internal.md#第6章)**
 泛型代码在某些边界（如动态分发、序列化）必须放弃编译期类型信息、退化成 `any`——这叫**类型擦除**；运行期再靠**反射**（`reflect` 包）把 `any` 还原回具体类型。Eino 在节点边界与检查点序列化处用反射兜底。
 
 **14. prompt injection / 提示注入　·　主要出现于：[第十篇](part-10-middlewares.md)（filesystem/agentsmd）**
@@ -92,10 +92,10 @@ Human-In-The-Loop：agent 或工具在运行中暂停、等待人工输入、再
 **16. 中间件 / 切面 / AOP　·　主要出现于：[第十篇](part-10-middlewares.md)、[第八篇](part-08-callbacks.md)**
 把"横切关注点"（如日志、压缩、规范注入）抽成一条可插拔的处理链，核心循环只负责按固定编排跑这条链——核心不污染、能力可增减。这叫面向切面编程（AOP）。Eino 的 callbacks 是"纯观测"切面，middlewares 是"语义改写"切面。
 
-**17. event iterator / pull-based　·　主要出现于：[第九篇·第 2 章](part-09-adk.md)**
+**17. event iterator / pull-based　·　主要出现于：[第九篇·第 2 章](part-09-adk.md#第2章)**
 调用方主动 `Next()` 一条条拉取结果（pull），而非被回调推（push）。Eino 的 agent 事件流是 pull-based 的——调用方控制节奏，天然支持流式与背压。
 
-**18. MCP（Model Context Protocol）　·　主要出现于：[第二篇·第 3 章](part-02-schema.md)（AgenticMessage 的 content blocks）**
+**18. MCP（Model Context Protocol）　·　主要出现于：[第二篇·第 3 章](part-02-schema.md#第3章)（AgenticMessage 的 content blocks）**
 让"模型宿主"与"外部工具服务器"互通的**标准协议**。Eino 的 `AgenticMessage` 在 content block 层级原生支持 `mcp tool call/result/list/approval` 等类型。
 
 **19. Mermaid / ASCII 图　·　贯穿全书**
@@ -114,7 +114,7 @@ Eino 定位、Go 范式取舍、三大支柱、四种流范式、代码地图与
 Message/Tool/Document 类型、序列化、多 provider 的统一消息适配、AgenticMessage 第二代模型。**前置**：本篇。**延伸**：被全书反复引用——它是公共类型契约。
 
 ### 第三篇　流处理机制（[`part-03-streaming.md`](part-03-streaming.md)）
-StreamReader/Writer、五种 readerType、concat/copy/merge——Eino 的招牌能力。**前置**：[第二篇](part-02-schema.md)。**延伸**：被[第六篇·第 3 章](part-06-state.md)的节点间流编排、[第八篇·第 3 章](part-08-callbacks.md)的流式观测复用。
+StreamReader/Writer、五种 readerType、concat/copy/merge——Eino 的招牌能力。**前置**：[第二篇](part-02-schema.md)。**延伸**：被[第六篇·第 3 章](part-06-state.md#第3章)的节点间流编排、[第八篇·第 3 章](part-08-callbacks.md#第3章)的流式观测复用。
 
 ### 第四篇　组件抽象体系（[`part-04-components.md`](part-04-components.md)）
 ChatModel/Tool/Retriever/Embedding/ChatTemplate 的接口契约、Option 双轨、流范式声明。**前置**：[第二篇](part-02-schema.md)。**延伸**：被[第五篇](part-05-compose.md)包装成节点、被[第七篇](part-07-tools-interrupt.md)的工具节点消费。
@@ -123,10 +123,10 @@ ChatModel/Tool/Retriever/Embedding/ChatTemplate 的接口契约、Option 双轨�
 Graph/Chain/DAG/Branch/Pregel/Runnable 的编译期校验与运行期调度。**前置**：[第四篇](part-04-components.md)。**延伸**：被[第六篇](part-06-state.md)的状态/字段映射、[第七篇](part-07-tools-interrupt.md)的中断/checkpoint、[第九篇](part-09-adk.md)的 ReAct 图复用。
 
 ### 第六篇　图的状态、字段映射与流编排（[`part-06-state.md`](part-06-state.md)）
-StateGraph 可变状态单例（非 reducer）、字段映射、节点间流读拼、泛型助手。**前置**：[第五篇](part-05-compose.md)。**延伸**：与[第七篇·第 3 章](part-07-tools-interrupt.md)的 `deepCopyState` 直接对接。
+StateGraph 可变状态单例（非 reducer）、字段映射、节点间流读拼、泛型助手。**前置**：[第五篇](part-05-compose.md)。**延伸**：与[第七篇·第 3 章](part-07-tools-interrupt.md#第3章)的 `deepCopyState` 直接对接。
 
 ### 第七篇　工具节点与中断/恢复/检查点（[`part-07-tools-interrupt.md`](part-07-tools-interrupt.md)）
-ToolsNode 并发分发、HITL 三档中断、地址驱动恢复、检查点与版本迁移。**前置**：[第五篇](part-05-compose.md)。**延伸**：被[第九篇·第 6 章](part-09-adk.md)的 agent HITL、[第十一篇](part-11-multiagent.md)的跨代理中断复用。
+ToolsNode 并发分发、HITL 三档中断、地址驱动恢复、检查点与版本迁移。**前置**：[第五篇](part-05-compose.md)。**延伸**：被[第九篇·第 6 章](part-09-adk.md#第6章)的 agent HITL、[第十一篇](part-11-multiagent.md)的跨代理中断复用。
 
 ### 第八篇　callbacks 切面机制（[`part-08-callbacks.md`](part-08-callbacks.md)）
 OnStart/OnEnd/OnError 五注入点、handler 链洋葱模型、流式 N+1 复制。**前置**：[第四篇](part-04-components.md)。**延伸**：横切所有组件/图/agent。
@@ -138,7 +138,7 @@ Agent/Runner/事件流、ReAct 回合循环、取消安全点状态机、failove
 八个可插拔中间件（dynamictool/plantask/skill/summarization/agentsmd/filesystem/patchtoolcalls/reduction）、钩子粒度与持久化边界。**前置**：[第九篇](part-09-adk.md)。**延伸**：[第十一篇](part-11-multiagent.md)的 DeepAgent 默认装载 filesystem 与 write_todos。
 
 ### 第十一篇　多代理预置模式（[`part-11-multiagent.md`](part-11-multiagent.md)）
-DeepAgent/Plan-Execute/Supervisor 三种多代理拓扑、文件系统 Backend、agent_tool 委派。**前置**：[第九篇](part-09-adk.md)、[第十篇](part-10-middlewares.md)。**延伸**：多代理协作原语复用[第九篇·第 9 章](part-09-adk.md)。
+DeepAgent/Plan-Execute/Supervisor 三种多代理拓扑、文件系统 Backend、agent_tool 委派。**前置**：[第九篇](part-09-adk.md)、[第十篇](part-10-middlewares.md)。**延伸**：多代理协作原语复用[第九篇·第 9 章](part-09-adk.md#第9章)。
 
 ### 第十二篇　内部通用机制与 Go 泛型（[`part-12-internal.md`](part-12-internal.md)）
 generic/gmap/gslice、UnboundedChan/concat/merge 原语、自研类型标签序列化、safe/core/mock。**前置**：[第三篇](part-03-streaming.md)（理解 concat/merge 角色）。**延伸**：被全书作为管道底座复用。
@@ -192,12 +192,12 @@ flowchart LR
 
 理解以下六条主线，就理解了 Eino 为何在每一处细节上都做出了那些看似繁琐、实则一致的选择。
 
-1. **三大支柱分层 + schema 叶子**。组件（接口契约）/ 编排（确定性）/ 代理（自主）三层正交，公共类型下沉到不依赖任何人的 `schema` 叶子包，`internal/` 作管道底座。依赖严格自上而下，无环。主线见[第一篇·第 2 章](part-01-overview.md)，贯穿全书。
-2. **流为一等公民**。流在 `schema` 层就被定义为基础数据类型（`StreamReader[T]` 五种 readerType），四种流范式（Invoke/Stream/Collect/Transform）由组件按"提供哪些方法值"声明，框架在节点边界自动桥接不匹配。主线贯穿[第三篇](part-03-streaming.md)、[第六篇·第 3 章](part-06-state.md)。
-3. **编译期泛型、运行期类型擦除**。Go 1.18 泛型把类型错误前移到编译期；但在图编排动态分发与检查点序列化的"类型擦除边界"回落到反射。`TypeOf[T]()` 是这条桥的基石。主线贯穿[第五篇·第 3 章](part-05-compose.md)、[第六篇·第 5 章](part-06-state.md)、[第十二篇·第 6 章](part-12-internal.md)。
-4. **确定性（compose）与自主（adk）分治，且 adk 复用 compose 作引擎**。compose 可预测、可类型检查、可恢复；adk 灵活、可处理开放任务。ReAct 循环本身就是一张 compose.Graph。主线收束于[第九篇·第 1、4 章](part-09-adk.md)。
-5. **可变状态单例 + checkpoint 显式深拷贝（而非 reducer）**。图状态是挂在 `context.Context` 上的可变单例，靠 mutex 与用户处理器原地改；跨轮累积靠处理器，回放/分叉靠 checkpoint 的序列化深拷贝。这与 LangGraph 的 reducer 模型是根本性的理念差。主线见[第六篇·第 1 章](part-06-state.md)、[第七篇·第 3 章](part-07-tools-interrupt.md)。
-6. **多代理收敛到 agent-as-tool**。源码里 `TransferToAgent`/`OnSubAgents`/`RunPath`/`workflow`/`deterministic_transfer` 全部标注 NOT RECOMMENDED，官方路线从"全上下文转移"收敛到"agent-as-tool"——子代理在独立 checkpoint、隔离上下文里跑，只回最终文本。主线收束于[第九篇·第 9 章](part-09-adk.md)与[第十一篇](part-11-multiagent.md)。
+1. **三大支柱分层 + schema 叶子**。组件（接口契约）/ 编排（确定性）/ 代理（自主）三层正交，公共类型下沉到不依赖任何人的 `schema` 叶子包，`internal/` 作管道底座。依赖严格自上而下，无环。主线见[第一篇·第 2 章](part-01-overview.md#第2章)，贯穿全书。
+2. **流为一等公民**。流在 `schema` 层就被定义为基础数据类型（`StreamReader[T]` 五种 readerType），四种流范式（Invoke/Stream/Collect/Transform）由组件按"提供哪些方法值"声明，框架在节点边界自动桥接不匹配。主线贯穿[第三篇](part-03-streaming.md)、[第六篇·第 3 章](part-06-state.md#第3章)。
+3. **编译期泛型、运行期类型擦除**。Go 1.18 泛型把类型错误前移到编译期；但在图编排动态分发与检查点序列化的"类型擦除边界"回落到反射。`TypeOf[T]()` 是这条桥的基石。主线贯穿[第五篇·第 3 章](part-05-compose.md#第3章)、[第六篇·第 5 章](part-06-state.md#第5章)、[第十二篇·第 6 章](part-12-internal.md#第6章)。
+4. **确定性（compose）与自主（adk）分治，且 adk 复用 compose 作引擎**。compose 可预测、可类型检查、可恢复；adk 灵活、可处理开放任务。ReAct 循环本身就是一张 compose.Graph。主线收束于[第九篇·第 1、4 章](part-09-adk.md#第1章)。
+5. **可变状态单例 + checkpoint 显式深拷贝（而非 reducer）**。图状态是挂在 `context.Context` 上的可变单例，靠 mutex 与用户处理器原地改；跨轮累积靠处理器，回放/分叉靠 checkpoint 的序列化深拷贝。这与 LangGraph 的 reducer 模型是根本性的理念差。主线见[第六篇·第 1 章](part-06-state.md#第1章)、[第七篇·第 3 章](part-07-tools-interrupt.md#第3章)。
+6. **多代理收敛到 agent-as-tool**。源码里 `TransferToAgent`/`OnSubAgents`/`RunPath`/`workflow`/`deterministic_transfer` 全部标注 NOT RECOMMENDED，官方路线从"全上下文转移"收敛到"agent-as-tool"——子代理在独立 checkpoint、隔离上下文里跑，只回最终文本。主线收束于[第九篇·第 9 章](part-09-adk.md#第9章)与[第十一篇](part-11-multiagent.md)。
 
 ---
 

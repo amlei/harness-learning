@@ -4,7 +4,7 @@
 
 > `adk/prebuilt` 把社区里三类常见多代理拓扑封装成"开箱即用"的构造器：`deep`（深度自主）、`planexecute`（规划-执行-重规划）、`supervisor`（主管调度）。与之配套的 `adk/filesystem` 定义了统一的文件/Shell 后端协议，让这些代理（尤其是 DeepAgent）具备读写、检索、执行命令的能力。
 >
-> 需要预先点明的一个贯穿性事实：**三种预置模式并非处于同一推荐等级**。`supervisor` 及其依赖的 workflow 原语（`Sequential`/`Loop`/`Parallel`，见[第九篇·第 9 章](part-09-adk.md)）在源码里被反复标注 `NOT RECOMMENDED`（`supervisor.go:42`、`workflow.go:622`），官方明确建议改用 `ChatModelAgent + AgentTool` 或 `DeepAgent`。而 `planexecute` 恰恰完全构建在这些"不推荐"的 workflow 原语之上。这是理解三者定位的基调。
+> 需要预先点明的一个贯穿性事实：**三种预置模式并非处于同一推荐等级**。`supervisor` 及其依赖的 workflow 原语（`Sequential`/`Loop`/`Parallel`，见[第九篇·第 9 章](part-09-adk.md#第9章)）在源码里被反复标注 `NOT RECOMMENDED`（`supervisor.go:42`、`workflow.go:622`），官方明确建议改用 `ChatModelAgent + AgentTool` 或 `DeepAgent`。而 `planexecute` 恰恰完全构建在这些"不推荐"的 workflow 原语之上。这是理解三者定位的基调。
 
 ---
 
@@ -73,7 +73,7 @@ DeepAgent 的"跟踪进度"靠一个会话级的待办列表实现。工具实�
 - **用户子代理**：对每个 `cfg.SubAgents`，用 `adk.NewTypedAgentTool` 包成 `tool.InvokableTool`。
 - **工具描述动态生成**（`task_tool.go:132`）：`Info()` 调用时才拼装描述，把所有子代理的 `name: description` 列表模板化进去。
 
-运行期 `InvokableRun`（`task_tool.go:156`）极其简短：解析 `{subagent_type, description}`，按 type 查表得到对应的 agent-tool，把 description 重新包成 `{"request": description}` 再调用。换言之，`task` 工具是一个**分发器**，真正的子代理执行由底层 `agent_tool`（见[第九篇·第 9 章](part-09-adk.md)）完成。
+运行期 `InvokableRun`（`task_tool.go:156`）极其简短：解析 `{subagent_type, description}`，按 type 查表得到对应的 agent-tool，把 description 重新包成 `{"request": description}` 再调用。换言之，`task` 工具是一个**分发器**，真正的子代理执行由底层 `agent_tool`（见[第九篇·第 9 章](part-09-adk.md#第9章)）完成。
 
 ### 2.4　子代理的上下文隔离
 
@@ -84,7 +84,7 @@ DeepAgent 的"跟踪进度"靠一个会话级的待办列表实现。工具实�
 - 用 `newTypedInvokableAgentToolRunner` 起一个**全新的 Runner** 跑子代理；
 - 循环消费子代理事件流，但**只把最终消息的文本内容**回给主代理。
 
-**动作作用域**（`agent_tool.go:84`）保证嵌套代理不会越权：子代理发出的 `Exit`/`TransferToAgent`/`BreakLoop` 动作在 agent_tool 边界内被吞掉，**只有 `Interrupted` 经 `CompositeInterrupt` 向上传播**（`agent_tool.go:251`），从而支持跨代理边界的人工介入（见[第七篇·第 2 章](part-07-tools-interrupt.md)）。
+**动作作用域**（`agent_tool.go:84`）保证嵌套代理不会越权：子代理发出的 `Exit`/`TransferToAgent`/`BreakLoop` 动作在 agent_tool 边界内被吞掉，**只有 `Interrupted` 经 `CompositeInterrupt` 向上传播**（`agent_tool.go:251`），从而支持跨代理边界的人工介入（见[第七篇·第 2 章](part-07-tools-interrupt.md#第2章)）。
 
 > **一处实现细节（核对确认）**：默认 general-purpose 子代理**并不递归拥有 `task` 工具**——委派默认只有一层：主代理 → 子代理，子代理只能用自己的工具完成任务，不能再向下委派。这降低了循环委派的风险，但也意味着"无限递归委派"需要用户显式构造。
 
@@ -117,7 +117,7 @@ sequenceDiagram
 
 ## 第 3 章　Plan-Execute：规划-执行-重规划
 
-`planexecute`（`plan_execute.go`）实现经典的 Plan-Execute-Replan 模式。它**不使用 agent_tool**，而是用 adk 的 workflow 原语（见[第九篇·第 9 章](part-09-adk.md)）把三个专职代理串成确定性流程。
+`planexecute`（`plan_execute.go`）实现经典的 Plan-Execute-Replan 模式。它**不使用 agent_tool**，而是用 adk 的 workflow 原语（见[第九篇·第 9 章](part-09-adk.md#第9章)）把三个专职代理串成确定性流程。
 
 ### 3.1　总体结构
 
@@ -167,7 +167,7 @@ flowchart LR
 
 ### 4.1　构造：确定性回转
 
-`New`（`supervisor.go:101`）做两件事：每个子代理被 `AgentWithDeterministicTransferTo`（见[第九篇·第 9 章](part-09-adk.md)）包了一层——子代理正常跑完后，**自动追加一个 `TransferToAgent(supervisor)` 动作**（`deterministic_transfer.go:139`）。这保证了"专家完工必回主管"的闭环，无需 LLM 记得回转。正向路由（Supervisor → 专家）则**靠 LLM 决定**。因此 Supervisor 的路由是"前向 LLM 自主、反向确定性"的混合。
+`New`（`supervisor.go:101`）做两件事：每个子代理被 `AgentWithDeterministicTransferTo`（见[第九篇·第 9 章](part-09-adk.md#第9章)）包了一层——子代理正常跑完后，**自动追加一个 `TransferToAgent(supervisor)` 动作**（`deterministic_transfer.go:139`）。这保证了"专家完工必回主管"的闭环，无需 LLM 记得回转。正向路由（Supervisor → 专家）则**靠 LLM 决定**。因此 Supervisor 的路由是"前向 LLM 自主、反向确定性"的混合。
 
 ### 4.2　全上下文共享与为何不推荐
 
@@ -179,7 +179,7 @@ flowchart LR
 
 ## 第 5 章　文件系统能力
 
-文件系统能力分两层：`adk/filesystem` 定义**协议接口**，`adk/middlewares/filesystem`（见[第十篇·第 3 章](part-10-middlewares.md)）把接口**实例化为代理工具**。
+文件系统能力分两层：`adk/filesystem` 定义**协议接口**，`adk/middlewares/filesystem`（见[第十篇·第 3 章](part-10-middlewares.md#第3章)）把接口**实例化为代理工具**。
 
 ### 5.1　Backend 接口
 
@@ -212,7 +212,7 @@ Eino 的多代理协作存在两条技术路线，预置模式分别选用其一
 ## 第 7 章　为何如此设计：权衡的总账
 
 1. **LLM 自主委派 vs 确定性编排**：DeepAgent 选前者（灵活、可并行，但行为不可预测、依赖提示词质量）；Plan-Execute 选后者（流程清晰、易追踪，但僵化——每轮只走一步、重规划依赖模型判断）；Supervisor 是混合体（前向自主、反向确定）。
-2. **上下文隔离 vs 共享**：隔离（DeepAgent）好处是控制上下文规模、子任务可并行、错误局部化；代价是子代理看不到主线程、需在 description 里把意图讲清。共享（Plan-Execute/Supervisor）好处是信息完整；代价是上下文线性增长、易爆炸。Eino 用 summarization 中间件（[第十篇·第 3 章](part-10-middlewares.md)）和大结果卸载缓解，但后者未在 DeepAgent 默认接线。
+2. **上下文隔离 vs 共享**：隔离（DeepAgent）好处是控制上下文规模、子任务可并行、错误局部化；代价是子代理看不到主线程、需在 description 里把意图讲清。共享（Plan-Execute/Supervisor）好处是信息完整；代价是上下文线性增长、易爆炸。Eino 用 summarization 中间件（[第十篇·第 3 章](part-10-middlewares.md#第3章)）和大结果卸载缓解，但后者未在 DeepAgent 默认接线。
 3. **task 工具的收口设计**：DeepAgent 把所有子代理收口为单一 `task` 工具，主代理决策维度从"调哪个子代理"降为"调 task 并选类型"，简化 ReAct 工具选择空间。
 4. **进度跟踪靠"提示词编程状态机"**：DeepAgent 的 `write_todos` 工具本身只持久化，状态机逻辑全在提示词里。Plan-Execute 的进度即 `ExecutedSteps`。两者都把"状态"压进 session 而非外部存储，简化实现但要求 session 可序列化。
 5. **委派默认不递归**：DeepAgent 的 general-purpose 子代理不递归拥有 `task` 工具，从结构上避免无限递归委派。
