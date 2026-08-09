@@ -18,6 +18,7 @@ window.CATALOG = {
     hermes:     { accent:'#d4a45a', mark:'☤', display:'Fraunces',          character:'antique gold · editorial serif' },
     periodical: { accent:'#8290b8', mark:'§',  display:'Spectral',         character:'slate indigo · periodical serif' },
     technical:  { accent:'#c7b08a', mark:'⌘', display:'Bricolage Grotesque', character:'graphite · utilitarian grotesque' },
+    eino:       { accent:'#086480', mark:'⬡', display:'Open Sans',           character:'deep teal · technical doc sans' },
   },
 
   source: [
@@ -29,6 +30,13 @@ window.CATALOG = {
       statsLabel:'15 篇 · ~330KB · 25+ 图',
     },
     /* ─ add the next project here (and create source/<id>/index.html) ─ */
+    {
+      id:'eino', title:'Eino', theme:'eino',
+      tagline:'A Go LLM framework — dissected.',
+      blurb:'CloudWeGo/字节跳动的 Go LLM 应用开发框架。不讲"怎么用"，而是追问"它是如何被造出来的"——强类型流编排、Go 泛型驱动的图引擎与 Pregel 状态图、组件-编排-ADK 三层架构、ReAct 回合循环、人机协同中断与检查点、多代理委派。',
+      author:'Amlei', updated:'2026-08-09',
+      statsLabel:'13 篇 · ~200KB · 25+ 图',
+    },
   ],
 
   paper: [

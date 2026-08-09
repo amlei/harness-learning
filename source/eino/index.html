@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="eino">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Eino · 源码剖析 — Harness Learning</title>
+<meta name="description" content="Eino 源码实现剖析：设计思想、实现机制与实现原理。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23ffffff'/%3E%3Ctext x='16' y='23' font-size='22' text-anchor='middle' fill='%23086480'%3E%E2%AC%A1%3C/text%3E%3C/svg%3E" />
+
+<!-- rendering libs -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css" />
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+
+<!-- shared design system + engine -->
+<link rel="stylesheet" href="../../reader/reader.css" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=Open+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+<div class="scrim" id="scrim"></div>
+
+<aside class="spine" id="spine">
+  <a class="brand" href="./">
+    <span class="cad">⬡</span>
+    <span class="bt"><b>Eino</b><span>source monograph</span></span>
+  </a>
+  <a class="back-link" href="../../">← atelier</a>
+
+  <div class="div" id="volDiv"></div>
+  <p class="label" id="volLabel">This volume</p>
+  <div id="volToc"></div>
+
+  <div class="foot">
+    作者 <a href="https://github.com/amlei" target="_blank" rel="noopener">Amlei</a> · 2026-08-09<br>
+    <a href="https://github.com/cloudwego/eino" target="_blank" rel="noopener">↗ upstream repo</a><br>
+    <a href="../../">← back to atelier</a>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar" id="topbar">
+    <button class="menu-btn" id="menuBtn">☰ index</button>
+    <a href="./"><span>⬡</span> Eino</a>
+    <span class="sep" id="crumbSep" style="display:none">/</span>
+    <span id="crumb"></span>
+    <div class="progress"><i id="progBar"></i></div>
+  </div>
+  <div id="view"></div>
+</div>
+
+<!-- this project's manifest — fully self-contained -->
+<script>
+window.READER = {
+  kind: 'source',
+  home: {
+    title: 'Eino',
+    mark: '⬡',
+    blurb: 'CloudWeGo/字节跳动的 Go LLM 应用开发框架。不讲"怎么用"，而是追问"它是如何被造出来的"——强类型流编排、Go 泛型驱动的图引擎与 Pregel 状态图、组件-编排-ADK 三层架构、ReAct 回合循环、人机协同中断与检查点、多代理委派。',
+    author: 'Amlei', updated: '2026-08-09',
+    repo: 'https://github.com/cloudwego/eino',
+    statsLabel: '13 篇 · ~200KB · 25+ 图',
+  },
+  parts: [
+    ['part-00-preface','00','序言与总目录','阅读地图、写作立场、贯穿全书的设计主线与概念入门释疑。',['前言','目录','主线'],'~9k'],
+    ['part-01-overview','01','总览与设计哲学','Eino 定位、Go 范式取舍、三大支柱（组件/编排/ADK）与代码地图。',['架构','Go','依赖链'],'~14k'],
+    ['part-02-schema','02','类型系统与消息模型','Message/Tool/Document 类型、序列化、多 provider 的统一消息适配。',['schema','消息','序列化'],'~14k'],
+    ['part-03-streaming','03','流处理机制','StreamReader/Writer、打包解包、拼接/合并/复制——Eino 的招牌能力。',['流','concat','merge'],'~17k'],
+    ['part-04-components','04','组件抽象体系','ChatModel/Tool/Retriever/Embedding/ChatTemplate 的接口契约与流范式。',['组件','接口','RAG'],'~15k'],
+    ['part-05-compose','05','compose 编排引擎','Graph/Chain/DAG/Branch/Pregel/Runnable 的编译期校验与运行期调度。',['Graph','Pregel','Runnable'],'~19k'],
+    ['part-06-state','06','图的状态、字段映射与流编排','StateGraph、字段映射、值合并、节点间流读拼与泛型助手。',['State','字段映射','流'],'~16k'],
+    ['part-07-tools-interrupt','07','工具节点与中断/恢复/检查点','ToolsNode 并发分发、HITL 中断/恢复、检查点与版本迁移。',['工具','中断','检查点'],'~16k'],
+    ['part-08-callbacks','08','callbacks 切面机制','OnStart/OnEnd/OnError 五注入点、handler 链与流式观测。',['回调','切面','trace'],'~12k'],
+    ['part-09-adk','09','ADK 代理运行时','Agent/Runner/事件流、ReAct 回合循环、故障转移与 agent 即工具。',['ADK','ReAct','Runner'],'~19k'],
+    ['part-10-middlewares','10','中间件链','八种可插拔中间件：动态工具/任务规划/技能/摘要/agentsmd/文件系统等。',['中间件','摘要','规划'],'~15k'],
+    ['part-11-multiagent','11','多代理预置模式','DeepAgent/Plan-Execute/Supervisor 三种多代理拓扑与委派。',['多代理','Deep','委派'],'~16k'],
+    ['part-12-internal','12','内部通用机制与 Go 泛型','generic/gmap/gslice、channel/concat/merge 原语与序列化支撑。',['泛型','原语','internal'],'~12k'],
+  ],
+};
+</script>
+<script src="../../reader/reader.js"></script>
+</body>
+</html>

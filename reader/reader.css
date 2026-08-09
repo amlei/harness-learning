@@ -51,15 +51,39 @@
   --f-body:'IBM Plex Sans','Noto Sans SC',system-ui,sans-serif;
   --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
 }
+:root[data-theme="eino"]{
+  /* light, faithful to cloudwego.io: white canvas + deep teal (#086480) brand + Open Sans.
+     Colours measured as computed styles on the live site (CSS = ground truth): hero banner
+     td-box--secondary #086480, dark section/footer #024053, light cyan block #bae0eb,
+     link azure #3996ec, body #222 on #fff, font "Open Sans". */
+  --ink:#ffffff; --ink-2:#f5f8f9; --ink-3:#e9eff1; --ink-deep:#eef3f5;
+  --rule:#dbe4e8; --rule-soft:#e7eef1;
+  --bone:#222222; --bone-dim:#44545d; --mute:#687882; --mute-2:#94a3ac;
+  --code-fg:#0a5468;             /* deep teal inline-code on a light pill */
+  --accent:#086480; --accent-soft:#0a7c95; --accent-deep:#024053; --accent-2:#3996ec;
+  --f-display:'Open Sans','Noto Sans SC',system-ui,-apple-system,sans-serif;
+  --f-body:'Open Sans','Noto Sans SC',system-ui,-apple-system,sans-serif;
+  --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
 
 body,.spine,.vol,.brand .cad,a,.shead,.topbar,.pcard,.pitem,.part-head,.hero,.outline{transition:background-color .45s ease,border-color .45s ease,color .45s ease}
+
+/* ── code-block palettes (theme-aware; overrides CDN hljs theme) ── */
+:root,:root[data-theme="periodical"],:root[data-theme="technical"]{
+  --code-bg:#14110d; --code-text:#e8e0d0;
+  --syn-keyword:#c792ea; --syn-string:#c3e88d; --syn-number:#f78c6c; --syn-comment:#6b7a72; --syn-fn:#82aaff;
+}
+:root[data-theme="atelier"],:root[data-theme="hermes"],:root[data-theme="eino"]{
+  --code-bg:#f6f5f2; --code-text:#2a2a2a;
+  --syn-keyword:#923a8a; --syn-string:#3a6a3a; --syn-number:#a05a1a; --syn-comment:#978a74; --syn-fn:#2e508a;
+}
 *{box-sizing:border-box}
 html{scroll-behavior:smooth}
 body{margin:0;background:var(--ink);color:var(--bone);font-family:var(--f-body);font-size:18px;line-height:1.75;-webkit-font-smoothing:antialiased;text-rendering:optimizeLegibility;font-feature-settings:"kern","liga","onum";overflow-x:hidden}
 body::before{content:"";position:fixed;inset:0;z-index:9999;pointer-events:none;background:radial-gradient(120% 90% at 18% -10%,color-mix(in srgb,var(--accent) 10%,transparent),transparent 55%),radial-gradient(110% 120% at 110% 120%,color-mix(in srgb,var(--ink-deep) 55%,transparent),transparent 50%)}
 body::after{content:"";position:fixed;inset:-50%;z-index:9998;pointer-events:none;opacity:.04;background-image:url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='220' height='220'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0.95 0 0 0 0 0.9 0 0 0 0 0.8 0 0 0 1 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");animation:drift 18s steps(6) infinite}
 @keyframes drift{0%{transform:translate(0,0)}100%{transform:translate(-40px,-30px)}}
-::selection{background:color-mix(in srgb,var(--accent) 30%,transparent);color:var(--bone)}
+::selection{background:color-mix(in srgb,var(--accent) 85%,transparent);color:var(--ink)}
 @keyframes rise{from{opacity:0;transform:translateY(16px)}to{opacity:1;transform:none}}
 .stagger{opacity:0;animation:rise .7s cubic-bezier(.2,.8,.2,1) forwards}
 
@@ -225,12 +249,17 @@ body::after{content:"";position:fixed;inset:-50%;z-index:9998;pointer-events:non
 .prose a:hover{color:var(--accent-deep);border-color:var(--accent)}
 .prose code{font-family:var(--f-mono);font-size:.84em;color:var(--code-fg);background:var(--ink-3);padding:.12em .42em;border-radius:3px;border:1px solid var(--rule-soft)}
 /* code blocks: calm dark island, full column width, lang label + copy */
-.prose pre{position:relative;font-family:var(--f-mono);font-size:13.5px;line-height:1.65;background:#0f0d0b;color:#f1e9d8;border:1px solid var(--rule);border-radius:6px;padding:30px 18px 16px;margin:1.8em 0;width:100%;max-width:none;overflow-x:auto}
-.prose pre code{background:none;border:none;padding:0;color:#f1e9d8;font-size:inherit}
-.prose pre[data-lang]::before{content:attr(data-lang);position:absolute;top:7px;left:14px;font-family:var(--f-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:rgba(241,233,216,.4)}
-.code-copy{position:absolute;top:5px;right:8px;font-family:var(--f-mono);font-size:10.5px;color:rgba(241,233,216,.55);background:rgba(255,255,255,.06);border:1px solid rgba(255,255,255,.1);padding:2px 9px;border-radius:4px;cursor:pointer;opacity:0;transition:opacity .2s,color .2s}
+.prose pre{position:relative;font-family:var(--f-mono);font-size:13.5px;line-height:1.65;background:var(--code-bg);color:var(--code-text);border:1px solid var(--rule);border-radius:6px;padding:30px 18px 16px;margin:1.8em 0;width:100%;max-width:none;overflow-x:auto}
+.prose pre code{background:none;border:none;padding:0;color:var(--code-text);font-size:inherit}
+.prose pre code .hljs-keyword{color:var(--syn-keyword)}
+.prose pre code .hljs-string,.prose pre code .hljs-meta-string{color:var(--syn-string)}
+.prose pre code .hljs-number,.prose pre code .hljs-literal{color:var(--syn-number)}
+.prose pre code .hljs-comment{color:var(--syn-comment);font-style:italic}
+.prose pre code .hljs-title,.prose pre code .hljs-function .hljs-title,.prose pre code .hljs-name{color:var(--syn-fn)}
+.prose pre[data-lang]::before{content:attr(data-lang);position:absolute;top:7px;left:14px;font-family:var(--f-mono);font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:color-mix(in srgb,var(--code-text) 40%,transparent)}
+.code-copy{position:absolute;top:5px;right:8px;font-family:var(--f-mono);font-size:10.5px;color:color-mix(in srgb,var(--code-text) 60%,transparent);background:color-mix(in srgb,var(--code-text) 8%,transparent);border:1px solid color-mix(in srgb,var(--code-text) 14%,transparent);padding:2px 9px;border-radius:4px;cursor:pointer;opacity:0;transition:opacity .2s,color .2s}
 .prose pre:hover .code-copy{opacity:1}
-.code-copy:hover{color:#fff;background:rgba(255,255,255,.12)}
+.code-copy:hover{color:var(--code-text);background:color-mix(in srgb,var(--code-text) 16%,transparent)}
 .prose blockquote{margin:1.8em 0;padding:6px 0 6px 24px;border-left:3px solid var(--accent);color:var(--bone-dim);font-family:var(--f-display);font-style:italic;font-size:1.02em;background:linear-gradient(90deg,color-mix(in srgb,var(--accent) 6%,transparent),transparent 70%)}
 .prose blockquote p{margin:.3em 0}
 .prose ul,.prose ol{margin:1.2em 0;padding-left:1.5em}

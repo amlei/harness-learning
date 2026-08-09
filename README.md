@@ -18,11 +18,15 @@ harness-learning/
 │   └── reader.js           # 共享阅读器引擎
 ├── source/
 │   └── hermes/
-│       ├── index.html      # ← Hermes 自己的阅读器（金色主题，独立、互不影响）
+│       ├── index.html      # ← Hermes 自己的阅读器（独立主题，互不影响）
 │       └── part-*.md
-└── paper/
-    └── _template.html      # 新增文章时复制此模板
+├── paper/
+│   └── _template.html      # 新增文章时复制此模板
+├── skill/study-notes/      # study-notes 技能：把任意仓库源码深挖成书的完整方法论（SKILL.md + references）
+└── .claude/skills/study-notes → ../../skill/study-notes   # 软链，供 Claude Code 自动发现
 ```
+
+> 🛠️ **完整方法论已固化为 [`skill/study-notes`](./skill/study-notes/SKILL.md) 技能**——用 `/study-notes` 给任意新仓库产出本书式的源码剖析（深挖→成篇→阅读站点，含主题核验、反知识诅咒、交叉引用等全部规则）。
 
 **核心约定**：
 
