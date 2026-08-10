@@ -26,6 +26,28 @@ flowchart TD
     TC --> OUT["compressed.jsonl → SFT/RL 训练"]
 ```
 
+序列化器把 OpenAI 风格的内部消息（`role` + `content`/`tool_calls`）翻成训练友好的 `from`/`value` 四类 turn，三类 XML 标签各司其职——这也是"逐字节一致"落地的具体形态：
+
+```python
+# agent/agent_runtime_helpers.py:115
+trajectory.append({"from": "system", "value":               # ① 固定 function-calling 模板，覆盖任何 ephemeral 注入
+    "You are a function calling AI model. ... provided with function signatures "
+    "within <tools> </tools> XML tags. ... results within <tool_response> </tool_response> XML tags.\n"
+    f"<tools>\n{agent._format_tools_for_system_message()}\n</tools>\n"
+    "Each function call should be enclosed within <tool_call> </tool_call> XML tags."})
+trajectory.append({"from": "human", "value": user_query})    # 数据集原始 prompt 作首条 human turn
+# ② assistant + tool_calls → gpt turn：每个调用包 <tool_call>，强制补 <think> 块
+content = f"<think>\n{msg['reasoning']}\n</think>\n" if msg.get("reasoning") else ""
+for tc in msg["tool_calls"]:
+    content += f"<tool_call>\n{json.dumps({'name': tc['function']['name'], 'arguments': args})}\n</tool_call>\n"
+if "<think>" not in content: content = "<think>\n</think>\n" + content   # 无推理也补空块，保 gpt turn 格式一致
+trajectory.append({"from": "gpt", "value": content.rstrip()})
+# ③ 连续 role=tool 消息合并为单条 tool turn，每条包 <tool_response>（配对不被割裂）
+tool_responses.append("<tool_response>\n" + json.dumps(
+    {"tool_call_id": tool_msg_id, "name": tool_name, "content": tool_content}) + "\n</tool_response>")
+trajectory.append({"from": "tool", "value": "\n".join(tool_responses)})
+```
+
 ---
 
 ## 第 2 章　batch_runner.py：并行批量轨迹生成
@@ -96,7 +118,71 @@ for toolset_name, probability in dist["toolsets"].items():
 4. 计算需节省的 token；
 5. 从 `compress_start` 起累积 turn，直到累积量 ≥ 需节省量。
 
+上述步骤 3-5 的实际编排如下——`_find_protected_indices` 划区、`_snap_boundary` 双向对齐、累积循环、多重护栏放弃点都集中在这段：
+
+```python
+# trajectory_compressor.py:781
+# 划受保护区：头部（首 system/human/gpt/tool）+ 尾部（最后 N 轮）
+protected, compress_start, compress_end = self._find_protected_indices(trajectory)
+# 头部 snap：可压区起点不得落在孤立的 <tool_response>（其 <tool_call> 在受保头部）
+compress_start = self._snap_boundary(trajectory, compress_start, compress_start, compress_end)
+if compress_start >= compress_end:                      # 护栏：snap 后无可压区，放弃
+    metrics.still_over_limit = total_tokens > self.config.target_max_tokens
+    return trajectory, metrics
+# 净节省 = 被压 turn token 和 − 摘要开销；累积量需 ≥ 需节省量 + 摘要开销
+target_tokens_to_compress = (total_tokens - self.config.target_max_tokens
+                             + self.config.summary_target_tokens)
+accumulated_tokens, compress_until = 0, compress_start
+for i in range(compress_start, compress_end):           # 从 compress_start 累积直到满足节省量
+    accumulated_tokens += turn_tokens[i]
+    compress_until = i + 1
+    if accumulated_tokens >= target_tokens_to_compress:
+        break
+# 尾部 snap：摘要切点不得落在 tool turn，以免割裂 <tool_call>/<tool_response> 配对
+compress_until = self._snap_boundary(trajectory, compress_until, compress_start, compress_end)
+```
+
+`_find_protected_indices` 的头尾划分——先记录四类角色首现，再以 `n // 2` 为界把 protected 集合拆成头尾两半，可压区即夹在 `max(head)+1` 与 `min(tail)` 之间：
+
+```python
+# trajectory_compressor.py:487
+first_system = first_human = first_gpt = first_tool = None
+for i, turn in enumerate(trajectory):               # 定位四类角色的首次出现
+    role = turn.get("from", "")
+    if role == "system" and first_system is None:   first_system = i
+    elif role == "human" and first_human is None:   first_human = i
+    elif role == "gpt"   and first_gpt is None:     first_gpt = i
+    elif role == "tool"  and first_tool is None:    first_tool = i
+# protect_first_system/human/gpt/tool 把首现加入 protected（受保头部）
+for i in range(max(0, n - self.config.protect_last_n_turns), n):
+    protected.add(i)                                # 受保尾部（默认最后 4 轮）
+head_protected = [i for i in protected if i <  n // 2]   # 以 n//2 划头尾
+tail_protected = [i for i in protected if i >= n // 2]
+compressible_start = max(head_protected) + 1 if head_protected else 0
+compressible_end   = min(tail_protected) if tail_protected else n
+```
+
 **边界对齐：不让 `<tool_call>` 与 `<tool_response>` 分家**——这是整段代码最精巧处。若压缩边界落在一个 `tool` turn 上，就会把调用与响应割裂，破坏训练轨迹的配对结构。`_snap_boundary` 优先前移边界（把孤立 tool turn 折进已含其 gpt turn 的区域）。
+
+```python
+# trajectory_compressor.py:525
+@staticmethod
+def _is_boundary_clean(trajectory, idx):
+    # tool turn（<tool_response>）紧随其 gpt（<tool_call>）；边界落在 tool turn 上即割裂配对
+    return idx >= len(trajectory) or trajectory[idx].get("from") != "tool"
+
+@classmethod
+def _snap_boundary(cls, trajectory, idx, min_idx, max_idx):
+    forward = idx                                   # 优先前移：孤立 tool turn 折进含其 gpt 的区域
+    while forward < max_idx and not cls._is_boundary_clean(trajectory, forward):
+        forward += 1
+    if cls._is_boundary_clean(trajectory, forward):
+        return forward
+    backward = idx                                  # 前移无解则后撤，最终 clamp 到 [min_idx, max_idx]
+    while backward > min_idx and not cls._is_boundary_clean(trajectory, backward):
+        backward -= 1
+    return backward
+```
 
 算法在多处护栏处"放弃压缩"而非"压坏"：区域 snap 后塌缩、可压缩区 token ≤ summary_target_tokens（压了反而更大）。
 
@@ -201,6 +287,31 @@ AIAgent 的 `run_conversation` 是同步的，跑在 `ThreadPoolExecutor(max_wor
 | `get_tool_schemas()` / `handle_tool_call()` | 暴露给代理的记忆操作工具 |
 | `shutdown()` | 刷队列、关连接 |
 
+抽象契约与带默认实现的分层一目了然——四个 `@abstractmethod` 是 provider 必须实现的硬契约，其余方法（`system_prompt_block`/`prefetch`/`queue_prefetch`/`sync_turn`/`shutdown`）都有空/无操作默认，provider 按需覆写：
+
+```python
+# agent/memory_provider.py:81
+class MemoryProvider(ABC):
+    @property
+    @abstractmethod
+    def name(self) -> str: ...                      # 'builtin' / 'honcho' / 'hindsight'
+
+    @abstractmethod
+    def is_available(self) -> bool: ...             # 仅查配置/依赖，禁联网（agent init 时判激活）
+    @abstractmethod
+    def initialize(self, session_id: str, **kwargs) -> None: ...  # agent_context/identity/parent_session_id/user_id
+    @abstractmethod
+    def get_tool_schemas(self) -> List[Dict[str, Any]]: ...       # 暴露给代理的记忆操作工具
+
+    # 带默认实现的分层方法（默认空/无操作，provider 按需覆写）：
+    def system_prompt_block(self) -> str: return ""               # 静态文本；召回走 prefetch()
+    def prefetch(self, query, *, session_id="") -> str: return "" # API 调用前召回，应快/命中缓存
+    def queue_prefetch(self, query, *, session_id="") -> None: ...# 为下一轮排队后台召回
+    def sync_turn(self, user_content, assistant_content, *,       # 每回合后持久化，应非阻塞
+                  session_id="", messages=None) -> None: ...
+    def shutdown(self) -> None: ...                               # 刷队列、关连接
+```
+
 丰富的可选 hook：`on_turn_start`、`on_session_end`（**仅在真实会话边界**触发，非每轮）、`on_session_switch`（处理 `/resume`/`/branch`/`/reset`/压缩的 session_id 轮换，带 `reset`/`rewound` 语义）、`on_pre_compress`（返回文本注入压缩摘要 prompt）、`on_delegation`（父代理观察子代理 task+result）、`on_memory_write`（镜像内置 memory 工具写入）、`backup_paths()`（声明 HERMES_HOME 外的状态目录供 `hermes backup`）。
 
 **trivial-prompt 共享判据**：`TRIVIAL_PROMPT_RE` 与 `is_trivial_prompt()`（`memory_provider.py:52-78`）是核心 prefetch 门控与 provider 端分类器共享的**单一真相源**。空串、whitespace、`/` 开头的斜杠命令、裸问候/应答（`yes|no|ok|thanks|hi|continue|done|lgtm|k` 等）均判为 trivial，跳过召回以省一次阻塞网络往返，并避免陈旧的用户模型上下文带偏一词回复。正则用锚定+尾标点白名单，使 `k8s`/`yolo`/`note` 这类仅以前缀匹配的词**不**误命中。
@@ -212,6 +323,29 @@ AIAgent 的 `run_conversation` 是同步的，跑在 `ThreadPoolExecutor(max_wor
 **单外部 provider 限制**：`add_provider()` 始终接受内置 provider，但**至多接受一个外部 provider**——第二次注册会被拒绝并告警。理由是防止工具 schema 膨胀与记忆后端冲突。
 
 **后台序列化执行器**——关键设计：`sync_all` / `queue_prefetch_all` **不在 turn-completion 路径内联执行**，而是投递到单 worker 的 `ThreadPoolExecutor`。源注释记录了一次事故：一个错配的 Hindsight daemon 阻塞约 298 秒才失败，内联执行导致 `run_conversation` 在用户已看到回复后仍长时间挂着，所有接口都把 agent 标记为 "running" 数分钟。单 worker 序列化保证 turn N 先于 turn N+1 落地，provider 实现无需自备顺序保证。
+
+投递路径与懒创建执行器——`max_workers=1` 是序列化的物理保证，`DaemonThreadPoolExecutor` 确保卡死的 provider 不会阻塞解释器退出：
+
+```python
+# agent/memory_manager.py:698
+def _submit_background(self, fn, *, kind="write"):
+    executor = self._get_sync_executor()
+    if executor is None:                            # 停机/创建失败：内联兜底跑 fn()，不丢任务
+        ...
+        return
+    with self._sync_executor_lock:                  # submit+tracking 与 shutdown 快照原子
+        if self._shutting_down: return
+        future = executor.submit(fn)
+        self._background_futures[future] = kind     # 按持久性类别追踪（write/prefetch/boundary）
+    future.add_done_callback(self._forget_background_future)
+
+def _get_sync_executor(self):
+    # ... 懒创建 + double-checked locking ...
+    self._sync_executor = DaemonThreadPoolExecutor(
+        max_workers=1,                              # 单 worker：turn N 严格先于 turn N+1 落地（FIFO）
+        thread_name_prefix="mem-sync",
+    )
+```
 
 **会话边界的原子序列化**：`commit_session_boundary_async()` 把"旧会话抽取 + provider 重绑定"作为**一个**序列化任务投递：`on_session_end`（端点抽取，可能是 LLM 调用）必须严格先于 `on_session_switch`（重绑 session_id）。源注释记录了 bug #16454：内联执行阻塞 `/new` 整个 LLM 往返；临时线程竞争内联 switch 导致晚到的 `on_session_end` 撞上 switch 后的绑定。单 worker 的 FIFO 顺序一举解决。
 

@@ -36,9 +36,54 @@
 
 `busy_policy` 的三态语义是 gateway mid-run 调度的核心：`dispatch` 在 agent 忙时仍执行；`reject` 拒绝；`interrupt_then_dispatch` 先中断当前 agent 再执行（`/stop`/`/new`/`/reset`）。
 
+```python
+# hermes_cli/commands.py:46
+@dataclass(frozen=True)
+class CommandDef:
+    name: str                          # canonical name without slash: "background"
+    description: str                   # 喂给所有 surface 的人类可读描述
+    category: str                      # 驱动 COMMANDS_BY_CATEGORY
+    aliases: tuple[str, ...] = ()
+    args_hint: str = ""                # "<prompt>", "[on|off|status]"
+    cli_only: bool = False
+    gateway_only: bool = False
+    gateway_config_gate: str | None = None  # truthy 配置点覆盖 cli_only
+    busy_policy: str = "reject"        # dispatch / reject / interrupt_then_dispatch
+    busy_handler: str | None = None    # Guard-2 mid-run handler 表的键
+    execute: str | None = None         # slash_exec.EXECUTORS 的键（纯格式化命令）
+
+# 典型条目：别名 / 三态 busy_policy / gateway_only / execute 各一例
+CommandDef("new", "Start a new session", "Session", aliases=("reset",), args_hint="[name]",
+           busy_policy="interrupt_then_dispatch", busy_handler="new")
+CommandDef("background", "Run a prompt in the background", "Session",
+           aliases=("bg", "btw"), args_hint="<prompt>", busy_policy="dispatch")
+CommandDef("approve", "Approve a pending dangerous command", "Session",
+           gateway_only=True, args_hint="[session|always]", busy_policy="dispatch")
+CommandDef("profile", "Show active profile name and home directory", "Info",
+           busy_policy="dispatch", execute="profile")
+```
+
 ### 1.3　派生消费者
 
 `_build_command_lookup()` 在导入期把每个 `CommandDef` 的 `name` 与所有 `aliases` 映射到同一实例，缓存为 `_COMMAND_LOOKUP`。`resolve_command(name)` 做大小写归一与去前导 `/` 后查表。所有派生结构（`COMMANDS`、`COMMANDS_BY_CATEGORY`、`GATEWAY_KNOWN_COMMANDS`、`gateway_help_lines()`、`telegram_bot_commands()`、`slack_native_slashes()`、`SlashCommandCompleter`）在导入期一次性构建。
+
+```python
+# hermes_cli/commands.py:349
+def _build_command_lookup() -> dict[str, CommandDef]:
+    """Map every name and alias to its CommandDef."""
+    lookup: dict[str, CommandDef] = {}
+    for cmd in COMMAND_REGISTRY:
+        lookup[cmd.name] = cmd
+        for alias in cmd.aliases:
+            lookup[alias] = cmd          # 别名映射到同一实例
+    return lookup
+
+_COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()  # 导入期一次性构建
+
+def resolve_command(name: str) -> CommandDef | None:
+    """Resolve a command name or alias; accepts names with or without leading '/'."""
+    return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+```
 
 ```mermaid
 flowchart TD
@@ -89,6 +134,31 @@ flowchart TD
 
 第 690 行 `_apply_profile_override()` 在模块顶层执行。其后才加载 `.env`、桥接 `security.redact_secrets`。
 
+```python
+# hermes_cli/main.py:517  (在 _apply_profile_override 内，argparse 之前)
+value_flags = {"-m", "--model", "--provider", "-t", "--toolsets", "-r", "--resume", ...}
+i = 0
+while i < len(argv):
+    arg = argv[i]
+    if arg == "--args" and _inside_mcp_add_args(i):   # mcp add 的子命令 argv 透传区，停扫
+        break
+    if arg in {"--profile", "-p"} and i + 1 < len(argv):
+        profile_name, consume, profile_index = argv[i + 1], 2, i; break
+    if arg.startswith("--profile="):
+        profile_name, consume, profile_index = arg.split("=", 1)[1], 1, i; break
+    if "=" not in arg and arg in value_flags and i + 1 < len(argv): i += 2
+    else: i += 1
+
+# 校验防误读：pytest "-p no:xdist" 不应被当成 profile 名
+if profile_name and not re.match(r"^[a-z0-9][a-z0-9_-]{0,63}$", profile_name):
+    profile_name = None
+# ...（无 flag 时回退读 <root>/active_profile）...
+os.environ["HERMES_HOME"] = hermes_home        # 必须在任何 hermes 模块导入前（导入期即缓存）
+if consume > 0 and profile_index is not None:   # 从 argv 剥离 flag，否则 argparse 报错
+    start = profile_index + 1
+    sys.argv = sys.argv[:start] + sys.argv[start + consume :]
+```
+
 ### 2.3　argparse 与子命令路由
 
 `main()` 调 `build_top_level_parser()`，随后逐一调用约 45 个 `build_X_parser` 工厂。每个子命令模块导出 `build_<name>_parser`，接收 `subparsers` 与命令处理函数（handler injection 避免反向导入 `main`）。`cmd_chat` 被绑为顶层/默认（无子命令 → 进入交互 REPL）。
@@ -119,12 +189,55 @@ flowchart TD
 6. `_expand_env_vars`（递归展开 `${VAR}` 与 `${env:VAR}`）；
 7. **managed scope 最后叠加**（确保管理员 pinned 值在叶层胜出）。
 
+```python
+# hermes_cli/config.py:3333  (_load_config_impl 内)
+config = copy.deepcopy(DEFAULT_CONFIG)
+if user_sig is not None:
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            user_config = fast_safe_load(f) or {}
+        config = _deep_merge(config, user_config)        # DEFAULT ← user，逐键递归覆盖
+    except Exception as e:
+        # last-known-good：YAML 解析失败时服务进程内上次成功的 config，
+        # 避免长跑 gateway 在用户改坏 config 时静默丢失 approvals.deny
+        lkg = _LAST_EXPANDED_CONFIG_BY_PATH.get(path_key)
+        if lkg is not None:
+            return _expand_env_vars(copy.deepcopy(lkg))
+
+normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+expanded = _expand_env_vars(normalized)
+# managed scope 最后叠加：管理员 pinned 值在叶层胜出，user 的 ${VAR} 无法 shadow
+managed_config = managed_scope.load_managed_config()
+if managed_config:
+    expanded = _deep_merge(expanded, _expand_env_vars(managed_config))
+```
+
 ### 3.3　_config_version 与迁移
 
 - **新增键 → deep-merge 自动覆盖，无需 bump**。`load_config` 在读时把 `DEFAULT_CONFIG` 与用户 YAML deep-merge，新默认键自动出现。
 - **结构性迁移（重命名/重组）→ 版本门控的迁移步骤**。表驱动注册表 `MIGRATIONS = ((12, _migrate_to_12), (13, …), … (33, _migrate_to_33))`，`run_migrations` 严格升序。
 - **支持地板** `SUPPORT_FLOOR_VERSION = 12`：显式低于 v12 的配置不自动迁移、不重写，leave byte-for-byte。
 - **关键写不变量**：迁移只能持久化**与默认不同的值** + 显式删除/重命名，绝不物化纯默认值（否则会把精简 config 改写成完整 `DEFAULT_CONFIG` dump——历史上的"hermes update 吹爆我的 config"报告）。
+
+```python
+# hermes_cli/config_migrations.py:53
+SUPPORT_FLOOR_VERSION = 12   # 低于 v12 的 config 不自动迁移、leave byte-for-byte
+
+# hermes_cli/config_migrations.py:651
+MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
+    (12, _migrate_to_12), (13, _migrate_to_13), (14, _migrate_to_14),
+    (15, _migrate_to_15), (16, _migrate_to_16), (17, _migrate_to_17),
+    (21, _migrate_to_21), (23, _migrate_to_23), (25, _migrate_to_25),
+    (29, _migrate_to_29), (31, _migrate_to_31), (32, _migrate_to_32),
+    (33, _migrate_to_33),
+)
+
+def run_migrations(current_ver: int, results: Dict[str, Any], quiet: bool) -> None:
+    # current_ver 在任何步骤前一次性捕获，步骤间不递进；严格升序应用
+    for target_ver, migration_fn in MIGRATIONS:
+        if current_ver < target_ver:
+            migration_fn(results, quiet)
+```
 
 ### 3.4　OPTIONAL_ENV_VARS 与密钥元数据
 
@@ -153,6 +266,34 @@ flowchart TD
 `KawaiiSpinner`（`agent/display.py:1054`）是工具执行期的动画 spinner。`get_waiting_faces`/`get_thinking_faces`/`get_thinking_verbs` 优先从 active skin 的 `spinner` 块取值，否则回退硬编码常量。
 
 **为何禁用 `\033[K`**：`prompt_toolkit` 的 `patch_stdout` 把 `sys.stdout` 包成队列并在每次 flush 周围注入换行，使 `\r` 覆盖与 `\033[K` 清行都不落在正确行——每帧 spinner 落到新行并覆盖状态栏。因此用空格清行替代：`f"\r{line}{' ' * pad}"`。
+
+```python
+# agent/display.py:1113  (face/verb 优先取自 active skin，否则回退硬编码常量)
+@classmethod
+def get_thinking_verbs(cls) -> list:
+    try:
+        skin = _get_skin()
+        if skin and skin.spinner.get("thinking_verbs"):
+            return skin.spinner["thinking_verbs"]
+    except Exception:
+        pass
+    return cls.THINKING_VERBS
+
+# agent/display.py:1208  (_animate 帧循环：空格 pad 清行，非 \033[K)
+while self.running:
+    frame = self.spinner_frames[self.frame_idx % len(self.spinner_frames)]
+    elapsed = time.time() - self.start_time
+    if wings:
+        left, right = wings[self.frame_idx % len(wings)]
+        line = f"  {left} {frame} {self.message} {right} ({elapsed:.1f}s)"
+    else:
+        line = f"  {frame} {self.message} ({elapsed:.1f}s)"
+    pad = max(self.last_line_len - len(line), 0)
+    self._write(f"\r{line}{' ' * pad}", end='', flush=True)   # 空格清行，非 \033[K
+    self.last_line_len = len(line)
+    self.frame_idx += 1
+    time.sleep(0.12)
+```
 
 ---
 
@@ -183,6 +324,26 @@ flowchart LR
 ### 5.2　传输层
 
 newline-delimited JSON-RPC 2.0。请求由 Ink 发起，事件由 Python 主动推送。Python 侧分派是单一方法表 `_methods`，由 `@method(name)` 装饰器填充。`dispatch` 对 `_LONG_HANDLERS` 集合中的方法，把整个调用 `contextvars.copy_context()` 后丢到线程池，避免慢方法阻塞 stdin 读循环。
+
+```python
+# tui_gateway/server.py:1934  (dispatch：快路径内联返回 dict，慢路径返回 None 由 worker 自写)
+def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
+    t = transport or _stdio_transport
+    token = bind_transport(t)                    # 钉进 ContextVar，pool 线程才写得到正确 transport
+    try:
+        _rid, method, _params = _normalize_request(req)
+        if method not in _LONG_HANDLERS:
+            return handle_request(req)           # 快路径：内联执行，直接返回响应 dict
+        ctx = contextvars.copy_context()         # 快照（含已绑定的 transport）
+        def run():
+            resp = handle_request(req)
+            if resp is not None:
+                t.write(resp)                    # 慢路径：worker 通过 t 自写响应
+        _pool.submit(lambda: ctx.run(run))       # ctx.run 让 pool 线程在快照 context 里执行
+        return None                              # 告诉 entry.py：响应已异步交出，别替我回写
+    finally:
+        reset_transport(token)
+```
 
 方法目录（90+ 方法）按域分组：Prompt/响应、附件、会话、委托/子代理、工具/命令、模型/配置、能力内省、运维/计费、唤醒/语音/宠物。事件目录（29 类）由 `_emit(event, sid, payload)` 发出。
 
@@ -241,7 +402,19 @@ flowchart TB
 
 两者**共享同一处理器 `cmd_dashboard` 与同一 `start_server`**，区别仅在 CLI parser 标志。`serve` 额外设 `no_open=True, headless_backend=True`，并设置 `HERMES_SERVE_HEADLESS=1`。
 
-契约的执行点是 `mount_spa(application)`：headless 守卫检查 `HERMES_SERVE_HEADLESS`，为真则不注册 StaticFiles / serve_spa，只暴露 JSON-RPC/WS/API 面。所以 `serve` 模式下 SPA 永不挂载——即使 `web_dist/` 因先前 `dashboard`/build 残留也照样 404。`dashboard` 与 `serve` 是**互不启动对方的独立表面**。
+契约的执行点是 `mount_spa(application)`：headless 守卫检查 `HERMES_SERVE_HEADLESS`，为真则不注册 StaticFiles / serve_spa，只暴露 JSON-RPC/WS/API 面。
+
+```python
+# hermes_cli/web_server.py:16054  (_headless 短路在 WEB_DIST.exists() 之前 → 注册兜底 404 → 提前 return)
+_headless = os.environ.get("HERMES_SERVE_HEADLESS") == "1"
+if _headless or not WEB_DIST.exists():
+    @application.get("/{full_path:path}")
+    async def no_frontend(full_path: str):
+        return JSONResponse({"error": _msg}, status_code=404)  # 兜底 404，附说明
+    return                # 提前返回 → 后续 StaticFiles / serve_spa 注册代码永不执行
+```
+
+所以 `serve` 模式下 SPA 永不挂载——即使 `web_dist/` 因先前 `dashboard`/build 残留也照样 404。`dashboard` 与 `serve` 是**互不启动对方的独立表面**。
 
 Web 框架是 **FastAPI + uvicorn**。`start_server` 不调 `uvicorn.run()`，而用 `uvicorn.Server` API 直接驱动，以便 bind 后读端口。
 
@@ -266,6 +439,14 @@ ACP（Agent Client Protocol）是面向 IDE 的 JSON-RPC 协议，让 Hermes 暴
 会话模型：每个 ACP session 是 1:1 映射到新的 `AIAgent`，`platform="acp"`、`enabled_toolsets=["hermes-acp"]`、`quiet_mode=True`。关键不变量是**双 id 模型**：ACP `session_id` 是稳定公开句柄，内部 `agent.session_id` 会因上下文压缩在中途轮换；`_persist` 与 `provenance.py` 的 `build_session_provenance` 专门处理这种轮换。
 
 AIAgent 的 `run_conversation` 是同步的，跑在 `ThreadPoolExecutor(max_workers=4)`，通过五个回调（`stream_delta`/`reasoning`/`tool_progress`/`step`/审批）桥接到 async `conn.session_update()`。并发安全通过 `contextvars.copy_context()` 包裹 executor 调用保证。
+
+```python
+# acp_adapter/server.py:1956  (ctx.run 作为 callable 交给 executor，在快照 context 里跑同步 agent)
+ctx = contextvars.copy_context()
+result = await loop.run_in_executor(_executor, ctx.run, _run_agent)
+# 关键在传 ctx.run 而非 _run_agent：pool 线程在快照的 context 里执行 _run_agent，
+# 并发的 ACP 会话在共享 pool（max_workers=4）上才不会互相践踏 HERMES_SESSION_KEY 等 ContextVar 写入
+```
 
 ---
 

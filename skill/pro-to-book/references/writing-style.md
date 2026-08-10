@@ -56,21 +56,18 @@ flowchart TD
 - 第〇篇=part-00-preface、第一篇=part-01-overview、第二篇=part-02-core-loop …… 第十四篇=part-14-feature-tools ……
 - 转换链接时：`第N篇·第X章 标题` → `[第N篇·第X章 标题](part-NN-<slug>.md)`，slug 取自目标篇文件名；必须具体到章/节标题。
 
-## 交叉引用（就地 markdown 链接，具体到标题）
+## 交叉引用（就地链接，具体到标题）
 
-正文凡提及其它篇的**具体章节**，把"第 N 篇·第 X 章 标题"写成链接，**必须具体到章/节标题**——读者点过去后一眼知道找什么：
+核心规则与"不转换"清单见 SKILL.md「交叉引用」，此处只补可操作示例与边界：
 
 ```
 [第三篇·第 6 章 工具集体系](part-03-tools.md)
 （见[第二篇·第 5 章 缓存稳定性纪律](part-02-core-loop.md)）
 ```
 
-- 链接文本格式：`第N篇·第X章 标题`；如有节，加 `· X.Y 节标题`。
-- **不要只写 `[第三篇](part-03-tools.md)` 而不指明哪一章。**
-- **不转换**：① 当前篇自身篇号；② 标题行（`#`/`##`/`###`）；③ 代码块与 Mermaid 图内；④ 已是链接处。
-- **不要用 `> 关联：…` 大段引用块**做关系说明——关系就地用链接表达。
+- 按上一节「篇号 → 文件名映射」把篇号解析成目标文件名。
 - 列举式（"第二、三篇"）可只链末项或保持纯文本；不强求每个都链。
-- 阅读器会把 `a[href$=".md"]` 拦截改写为同卷 hash 路由，点击即跳转；在 GitHub 上仍是相对链接，也工作。
+- 阅读器把 `a[href$=".md"]` 拦截改写为同卷 hash 路由，点击即跳转；在 GitHub 上仍是相对链接，也工作。
 
 ## 配图
 
@@ -81,7 +78,7 @@ flowchart TD
 
 ## 反"知识诅咒"（受众是未知深度的学习者）
 
-- **part-00「概念入门」**：把全书反复出现的生僻术语各写一条学习者级解释（2–5 句，第三人称，标注"主要出现于第几篇"）。覆盖范围如：AI 代理循环、function calling、token/上下文窗口、**提示缓存/prefix cache**、OpenAI 兼容 API、transport 适配、同步循环+异步桥接、进程/线程/GIL、子进程/守护/孤儿、SQLite/FTS5/WAL、SSRF/OS 安全边界、插件/ABC/注册表、MCP、CDP/无障碍树、MoA、Profile、辅助模型、reasoning token……
+- **part-00「概念入门」**：把全书反复出现的生僻术语各写一条学习者级解释（2–5 句，第三人称，标注"主要出现于第几篇"）。覆盖范围如：AI Agent 循环、function calling、token/上下文窗口、**提示缓存/prefix cache**、OpenAI 兼容 API、transport 适配、同步循环+异步桥接、进程/线程/GIL、子进程/守护/孤儿、SQLite/FTS5/WAL、SSRF/OS 安全边界、插件/ABC/注册表、MCP、CDP/无障碍树、MoA、Profile、辅助模型、reasoning token……（**领域专有名词保留源词**：Agent 即"智能体"，不译作"代理"；token、prefix cache、transport、MCP、CDP、FTS5、WAL、asyncio、ABC、GIL、MoA 等同理保留英文，必要时以括注释义。）
 - **正文**用到这些术语时，必要时回指"（概念见第〇篇·X）"。
 - **就地"知识补充"**：某段需要展开的背景，在段后加一小段解释（引用块或普通段）。
 - 默认读者**不一定**懂 FTS5/WAL/CDP/SSRF/asyncio/ABC…… 该解释就解释。

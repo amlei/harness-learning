@@ -98,6 +98,19 @@ def dispatch(self, name, args, **kwargs):
 - **TTL 缓存**：`_CHECK_FN_TTL_SECONDS = 30.0`。30 秒内复用上次结果。
 - **last-good 抖动抑制**（对应 issue #21658/#5304）：Docker daemon 在负载下偶发 `subprocess.run` 超时会返回 False，而这会瞬间从某个正在构建的代理（最典型是 delegate 子代理）剥离整个 terminal+file 工具集，子代理报 "Tool read_file does not exist"。解法是记 `_check_fn_last_good`（上次返回 True 的 monotonic 时间戳），若新失败在 `_CHECK_FN_FAILURE_GRACE_SECONDS = 60.0` 窗口内，则**服务上次的 True 且不缓存本次失败**，下次重新探测。
 
+```python
+# tools/registry.py:311-328
+if value:
+    _check_fn_last_good[cache_key] = now      # True → 记 last-good 时间戳
+    _check_fn_cache[cache_key] = (now, True)
+    return True
+
+last_good = _check_fn_last_good.get(cache_key)
+if last_good is not None and now - last_good < _CHECK_FN_FAILURE_GRACE_SECONDS:
+    # 近期成功过 → 当作抖动：服务 last-good True，且不缓存本次失败，下次重新探测
+    return True
+```
+
 缓存还按 **profile 维度**分桶。单 profile 进程保持进程级缓存；多路复用 gateway 每个 profile 回合安装一个 Hermes-home override，profile key 用 `Path(override).resolve()` 作为隔离边界。无法解析 profile 身份时返回 `CHECK_FN_CACHE_BYPASS = ""`，**两层缓存都绕过**——宁可重新探测也不跨 profile 串别名（fail closed）。
 
 ---
@@ -147,6 +160,20 @@ def discover_builtin_tools(tools_dir=None):
 
 **磁盘缓存**：AST 扫描约 100 个文件 warm cache 下约 145ms，所以判定结果按 `(mtime_ns, size)` 为 key 缓存到 `~/.hermes/cache/tool_discovery_cache.json`。命中则不重读文件。`registry.py` 故意延迟导入 `hermes_constants`/`utils` 到函数体内，以保持"模块 import 期零依赖叶子"。
 
+```python
+# tools/registry.py:89-103
+st = path.stat()
+stat_key = (st.st_mtime_ns, st.st_size)          # 磁盘缓存 key = (mtime_ns, size)
+cached = cache.get(abs_path)
+if (isinstance(cached, (list, tuple)) and len(cached) == 3
+        and (cached[0], cached[1]) == stat_key):
+    registers = bool(cached[2])                  # 命中 → 信任缓存，不重读文件
+else:
+    registers = _module_registers_tools(path)    # 失配 → 重新 AST 扫描
+    cache_dirty = True
+fresh_cache[abs_path] = [stat_key[0], stat_key[1], registers]
+```
+
 **排除项**：`__init__.py`、`registry.py` 自身、`mcp_tool.py`（MCP 工具走单独的 `discover_mcp_tools`，其内部有阻塞 120s 等待，曾作为模块级副作用触发 gateway 心跳冻结 issue #16856，已被移到各入口显式启动）。
 
 ---
@@ -180,6 +207,27 @@ Step 7  post_tool_call hook + transform_tool_result
 2. **当前是 worker 线程**（delegate_task 的并行工具执行）：用线程局部持久 loop。
 3. **CLI 主线程无 loop**：用进程级持久 loop。
 
+```python
+# model_tools.py:134-139, 202-207
+try:
+    loop = asyncio.get_running_loop()
+except RuntimeError:
+    loop = None
+
+if loop and loop.is_running():
+    # 情形 1：当前线程已有 running loop → 开一次性 ThreadPoolExecutor，
+    #         future.result(timeout=300)，超时则 call_soon_threadsafe(t.cancel)
+    ...  # pool.submit(propagate_context_to_thread(_run_in_worker))
+
+if threading.current_thread() is not threading.main_thread():
+    # 情形 2：worker 线程 → 线程局部持久 loop
+    return _get_worker_loop().run_until_complete(coro)
+
+# 情形 3：CLI 主线程无 loop → 进程级持久 loop
+tool_loop = _get_tool_loop()
+return tool_loop.run_until_complete(coro)
+```
+
 为何不用 `asyncio.run()`？因为它每次创建并**关闭**一个新 loop，而缓存的 httpx/AsyncOpenAI 客户端绑定在那个死掉的 loop 上，GC 时会抛 "Event loop is closed"。持久 loop 让缓存的客户端在整个线程生命周期内保持有效。
 
 ---
@@ -199,6 +247,20 @@ Step 7  post_tool_call hook + transform_tool_result
    - `browser_navigate` 在 web_search/web_extract 都不可用时，删掉 description 里的交叉引用。
 5. **schema_sanitizer**（`570-574`）：对最终 schema 树做 deepcopy 级的 provider 兼容性修复（见第 7 章）。
 6. **tool_search 渐进披露**（`586-609`）：当可延迟表面（MCP + 非核心插件工具）超过上下文阈值（默认 10%），用三个 bridge 工具（`tool_search`/`tool_describe`/`tool_call`）替换。核心工具**永不延迟**。
+
+```python
+# tools/tool_search.py:797-820
+visible, deferrable = classify_tools(incoming)        # 核心工具进 visible，永不延迟
+if not deferrable:
+    return AssemblyResult(tool_defs=incoming, activated=False)
+
+deferrable_tokens = estimate_tokens_from_schemas(deferrable)
+if not should_activate(config, deferrable_tokens, context_length):
+    return AssemblyResult(tool_defs=incoming, activated=False)   # 未超阈值 → 直通
+
+bridge = bridge_tool_schemas(len(deferrable), listing=listing, listing_form=listing_form)
+result = visible + bridge    # 超阈值：可延迟表面被三个 bridge 工具替换，核心工具保留
+```
 
 ---
 
@@ -259,6 +321,23 @@ else:
 - **Fireworks / draft-07 strict**：拒绝 `default` 与 `$ref` 同层。`_strip_ref_siblings`（`181-202`）递归剥离。
 - **OpenAI Codex backend**：拒绝顶层 `allOf`/`anyOf`/`oneOf`/`enum`/`not`。`_strip_top_level_combinators` 只剥顶层。
 - **nullable union 折叠**（`240-302`）：把 `anyOf:[{string},{null}]` 折成非 null 分支 + `nullable:true`，让运行时 `coerce_tool_args` 仍能把模型输出的字面 `"null"` 串映射成 Python None。
+
+属性键重命名的"反向还原"刻意**不存侧表**——`unrename_tool_args` 在 dispatch 时（`model_tools.py:765`）拿到的 `params_schema` 是 registry 里的 **ORIGINAL** schema，现场重算前向映射再反转，因此免疫 `get_tool_definitions` 缓存命中与 MCP nuke-and-repave 导致的映射丢失；正因如此，`_rename_property_keys` 必须是纯函数（插入序 + 数字后缀去重），前向与反向才能各自独立算出却始终一致：
+
+```python
+# tools/schema_sanitizer.py:99-108
+props = params_schema.get("properties")
+if not isinstance(props, dict):
+    return args
+# 无存储侧表：从 ORIGINAL schema 重算前向映射再反转——纯函数，
+# 免疫 get_tool_definitions 缓存命中 / MCP nuke-and-repave 导致的侧表丢失。
+reverse = {v: k for k, v in _rename_property_keys(props, "<unrename>").items()}
+out = {}
+for key, value in args.items():
+    orig = reverse.get(key, key)
+    subschema = props.get(orig)
+    if isinstance(subschema, dict):
+```
 
 还有两个**响应式** sanitizer（仅在后端 400 时触发）：`strip_pattern_and_format`（llama.cpp 正则引擎只支持 ECMAScript 子集）、`strip_slash_enum`（xAI 编译 enum 含 `/` 时 400）。
 

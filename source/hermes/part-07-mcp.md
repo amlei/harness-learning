@@ -41,6 +41,28 @@ MCP Python SDK 是**可选依赖**。`mcp_tool.py` 用一连串 `try/except Impo
 4. **安全过滤**：`_filter_suspicious_mcp_servers()` 剔除"数据外泄形状"的配置（如 `command: curl ...| sh`）；
 5. `_interpolate_env_vars()` 递归解析 `${VAR}` 与 Cursor 风格 `${env:VAR}`。
 
+```python
+# tools/mcp_tool.py:4655
+        if _env_enabled("HERMES_SAFE_MODE"):
+            return {}
+        config = load_config()
+        servers = config.get("mcp_servers")
+        if not servers or not isinstance(servers, dict):
+            return {}
+        try:
+            from hermes_cli.env_loader import load_hermes_dotenv
+            load_hermes_dotenv()
+        except Exception:
+            pass
+        safe_servers: Dict[str, dict] = {}
+        for name, cfg in _filter_suspicious_mcp_servers(servers).items():
+            interpolated = _interpolate_env_vars(cfg)
+            if isinstance(interpolated, dict):
+                _warn_hidden_whitespace(name, interpolated)
+                safe_servers[name] = interpolated
+        return safe_servers
+```
+
 `hermes_cli/config.py` 还有一条**迁移期守卫**：每次配置迁移后扫描 `mcp_servers`，对判为可疑的条目**就地写 `enabled: false`** 并持久化，保留审计痕迹但不启动。这是针对历史恶意注入配置的防御。
 
 ---
@@ -85,6 +107,28 @@ flowchart LR
 4. **孤儿清理**：spawn 前先 `_kill_orphaned_mcp_children()`。
 5. **握手**：`session.initialize()` 握手结果存 `self.initialize_result`，供后续能力判定。
 
+```python
+# tools/mcp_tool.py:2406
+        from tools.osv_check import check_package_for_malware
+        try:
+            malware_error = await asyncio.wait_for(
+                asyncio.to_thread(check_package_for_malware, command, args),
+                timeout=_OSV_MALWARE_CHECK_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "MCP server '%s': OSV malware preflight timed out after %.0fs "
+                "(network slow/unreachable) — proceeding without the check.",
+                self.name, _OSV_MALWARE_CHECK_TIMEOUT_S,
+            )
+            malware_error = None
+        if malware_error:
+            raise ValueError(f"MCP server '{self.name}': {malware_error}")
+        # Applied AFTER the OSV preflight so the check inspects the real
+        # package, not the watchdog wrapper.
+        command, args = _wrap_command_with_watchdog(command, args)
+```
+
 ### 3.3　父死亡看门狗（mcp_stdio_watchdog.py）
 
 这是 stdio 传输的**可靠性核心**。问题：macOS 没有 Linux 的 `prctl(PR_SET_PDEATHSIG)` 等价物，Hermes 进程被 `kill -9` 时，优雅回收代码不会执行，stdio 子进程变孤儿，反复重启会堆积 N 个孤儿争抢同一上游 SSE session。
@@ -97,6 +141,22 @@ flowchart LR
 4. 父进程一消失，立即 `_terminate_process_group` 并退出；
 5. 还注册了 SIGTERM/SIGINT 转发，让优雅关闭路径的 `killpg` 仍能传达——否则 watchdog 包装会反转它要修复的 bug。
 
+```python
+# tools/mcp_stdio_watchdog.py:57
+def _is_orphaned(original_ppid: int, getppid=os.getppid) -> bool:
+    """Return whether this process no longer has its original POSIX parent."""
+    return getppid() != original_ppid
+
+
+# tools/mcp_stdio_watchdog.py:95
+def _watchdog_loop(proc: subprocess.Popen, original_ppid: int) -> None:
+    while proc.poll() is None:
+        if _is_orphaned(original_ppid):
+            _terminate_process_group(proc)
+            return
+        time.sleep(_POLL_INTERVAL_S)
+```
+
 ### 3.4　HTTP / StreamableHTTP 传输
 
 `_run_http()` 处理三种 HTTP 变体：
@@ -108,6 +168,26 @@ flowchart LR
 三者都注入 `mcp-protocol-version` 头，用 `BaseExceptionGroup` 捕获 anyio TaskGroup 掉落，经 `_reconnect_or_reraise_group()` 判断：已就绪后的瞬时掉落→立即重建（无退避）；握手期失败→重抛走正常退避路径。
 
 **预检内容类型探测**：SDK 连接前先 HEAD/GET 探测 url，若 content-type 不是 `application/json`/`text/event-stream`，抛 `NonMcpEndpointError`（永久失败，不重试）。这避免了 SDK 在错误 url 上挂满整个 `connect_timeout` 才抛晦涩 `CancelledError`。
+
+```python
+# tools/mcp_tool.py:2735
+        if self._shutdown_event.is_set():
+            raise eg
+        fatal, _rest = eg.split((KeyboardInterrupt, SystemExit))
+        if fatal is not None:
+            raise eg
+        cancelled, _rest = eg.split(asyncio.CancelledError)
+        if cancelled is not None:
+            raise eg
+        if not self._ready.is_set():
+            raise eg
+        logger.debug(
+            "MCP server '%s': transport TaskGroup exited after a live session "
+            "(%r) — reconnecting immediately instead of backing off",
+            self.name, eg,
+        )
+        return "reconnect"
+```
 
 ### 3.5　连接生命周期与重连
 
@@ -150,6 +230,50 @@ flowchart LR
 5. **registry.register()**：`toolset=f"mcp-{name}"`，注册后 `_track_mcp_tool_server()` 记录精确原始 server 名。
 6. **schema 缓存 write-through**：成功连接后，把工具 manifest 写入 `mcp_schema_cache.json`，供下次懒启动。
 
+碰撞预检的实现是 fail-closed 的关键：每个 candidate 带「归一化后的 `registry_name` + 原始 `origin`」。先按 `(registry_name, origin)` 去重（完全重复无害，留一即可）；再把每个 `registry_name` 收集到的**不同 origin 集合**数一下——多于一个即归一化碰撞，全部跳过，**不在碰撞条目里选赢家**。
+
+```python
+# tools/mcp_tool.py:5907
+    origins_by_name: Dict[str, set[str]] = {}
+    for candidate in candidates:                       # 去重 + 收集 origin
+        key = (candidate["registry_name"], candidate["origin"])
+        if key in seen_candidates:
+            continue
+        seen_candidates.add(key)
+        origins_by_name.setdefault(candidate["registry_name"], set()).add(
+            candidate["origin"]
+        )
+    ambiguous_names = {                                # >1 个不同 origin ⇒ 碰撞
+        name: origins
+        for name, origins in origins_by_name.items()
+        if len(origins) > 1
+    }
+    # 随后注册循环：if registry_name in ambiguous_names: continue
+```
+
+```python
+# tools/mcp_tool.py:5967
+        registry.register(
+            name=registry_name,
+            toolset=toolset_name,
+            schema=candidate["schema"],
+            handler=candidate["handler"],
+            check_fn=candidate["check_fn"],
+            is_async=False,
+            description=candidate["schema"]["description"],
+        )
+        # The pre-check above is advisory only. Multiple servers connect in
+        # parallel, so ToolRegistry.register() is the atomic ownership gate.
+        if registry.get_toolset_for_tool(registry_name) != toolset_name:
+            logger.error(
+                "MCP server '%s': registration of %s as '%s' was rejected by "
+                "the registry; skipping provenance/count updates",
+                name, candidate["origin"], registry_name,
+            )
+            continue
+        _track_mcp_tool_server(registry_name, name)
+```
+
 ### 4.4　工具调用派发
 
 `_make_tool_handler()` 返回同步 handler，执行：
@@ -159,6 +283,23 @@ flowchart LR
 3. 在 `_rpc_lock` 下 `session.call_tool(tool_name, arguments=args)`。
 4. **结果多模态渲染**：text block 拼 text；`ImageContent`→base64 解码→`cache_image_from_bytes`→`MEDIA:<path>` 标签；`AudioContent` 同理。
 5. **错误恢复**：OAuth 401→重建+重试一次；transport session 过期→重建。
+
+```python
+# tools/mcp_tool.py:4896
+        if _server_error_counts.get(server_name, 0) >= _CIRCUIT_BREAKER_THRESHOLD:
+            opened_at = _server_breaker_opened_at.get(server_name, 0.0)
+            age = time.monotonic() - opened_at
+            if age < _CIRCUIT_BREAKER_COOLDOWN_SEC:
+                remaining = max(1, int(_CIRCUIT_BREAKER_COOLDOWN_SEC - age))
+                return tool_error(
+                    f"MCP server '{server_name}' is unreachable after "
+                    f"{_server_error_counts[server_name]} consecutive "
+                    f"failures. Auto-retry available in ~{remaining}s. "
+                    f"Do NOT retry this tool yet — use alternative "
+                    f"approaches or ask the user to check the MCP server."
+                )
+            # Cooldown elapsed → fall through as a half-open probe.
+```
 
 ```mermaid
 sequenceDiagram
@@ -200,6 +341,29 @@ MCP server 可通过 `sampling/createMessage` 反向请求 LLM 补全。`Samplin
 5. **同步调用卸载**：`asyncio.to_thread` 调 `auxiliary_client.call_llm(task="mcp")`，带超时；
 6. **结果分派**：`finish_reason=="tool_calls"` → 返带 tool 循环治理的结果；否则返 `CreateMessageResult`。
 
+```python
+# tools/mcp_tool.py:1301
+    def _check_rate_limit(self) -> bool:
+        """Sliding-window rate limiter.  Returns True if request is allowed."""
+        now = time.time()
+        window = now - 60
+        self._rate_timestamps[:] = [t for t in self._rate_timestamps if t > window]
+        if len(self._rate_timestamps) >= self.max_rpm:
+            return False
+        self._rate_timestamps.append(now)
+        return True
+
+    def _resolve_model(self, preferences) -> Optional[str]:
+        """Config override > server hint > None (use default)."""
+        if self.model_override:
+            return self.model_override
+        if preferences and hasattr(preferences, "hints") and preferences.hints:
+            for hint in preferences.hints:
+                if hasattr(hint, "name") and hint.name:
+                    return hint.name
+        return None
+```
+
 **Elicititation** 是平行的对称机制：server 通过 `elicitation/create` 请求结构化用户输入（如支付授权）。关键技巧：`_pending_call_context` 捕获代理的 contextvars 快照，因为 MCP recv loop task 不继承 `HERMES_SESSION_PLATFORM`，elicitation 回调需要 `Context.copy().run()` 重放才能检测到正确的 gateway 平台。
 
 ---
@@ -221,6 +385,20 @@ OAuth 分三层：
 - **provider 缓存**：按 `(hermes_home, server_name)` 键缓存；
 - **跨进程令牌重载**：`invalidate_if_disk_changed` 比对 tokens 文件 `st_mtime_ns`，变化则强制下次流程从盘重读——这是 cron 刷新令牌工作流的核心；
 - **401 去重**：N 个并发工具调用同 token 401 时，只触发一次恢复，其余 await 同一 future。
+
+`invalidate_if_disk_changed` 的微妙之处在于「强制重读」本身：MCP SDK 的 `OAuthClientProvider` **没有公开的缓存失效 API**——它把 token 缓存在内存里，正常流程不会重读 storage。Hermes 戳它的私有 `_initialized` 标志，让下一次 auth flow 重新执行 storage 读取，从而拣起盘上由 cron 写入的新 token。
+
+```python
+# tools/mcp_oauth_manager.py:664
+            if mtime_ns != entry.last_mtime_ns:
+                entry.last_mtime_ns = mtime_ns
+                # SDK 无公开失效 API；戳私有 _initialized，下次 auth flow
+                # 才会重读 storage 而非复用内存里的 stale token。
+                if hasattr(entry.provider, "_initialized"):
+                    entry.provider._initialized = False
+                return True
+            return False
+```
 
 ### 6.3　顶层：Dashboard OAuth 桥（mcp_dashboard_oauth.py）
 
@@ -252,6 +430,27 @@ OAuth 分三层：
 | `messages_send` | 发消息（委托 send_message_tool） |
 | `channels_list` | 列可发消息的渠道 |
 | `permissions_list_open` / `permissions_respond` | 列待审批 / 处理审批 |
+
+```python
+# mcp_serve.py:598
+    mcp = FastMCP(
+        "hermes",
+        instructions=(
+            "Hermes Agent messaging bridge. Use these tools to interact with "
+            "conversations across Telegram, Discord, Slack, WhatsApp, Signal, "
+            "Matrix, and other connected platforms."
+        ),
+    )
+
+    bridge = event_bridge or EventBridge()
+
+    @mcp.tool()
+    def conversations_list(
+        platform: Optional[str] = None,
+        limit: int = 50,
+        search: Optional[str] = None,
+    ) -> str:
+```
 
 **EventBridge** 是核心轮询器：200ms 间隔轮询 `SessionDB`，维护 1000 上限的内存事件队列。优化：**state.db mtime 检查**——mtime 未变则整轮跳过，使 200ms 轮询几乎免费。
 

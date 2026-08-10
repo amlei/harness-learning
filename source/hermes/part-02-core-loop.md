@@ -57,6 +57,21 @@
 - 外部记忆预取（prefetch）；
 - 崩溃韧性持久化。
 
+其开篇几步即典型地呈现"序言"的防御性面貌——在任何 LLM 调用之前先收束环境与会话状态：
+
+```python
+# agent/turn_context.py:364
+    # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
+    install_safe_stdio()
+
+    # Recover a session rotated by another path before binding log/turn ids or
+    # copying client-supplied history. Everything in this turn must consistently
+    # belong to the canonical child, including observability metadata.
+    recovered_history = recover_rotated_compression_session(agent)
+    if recovered_history is not None:
+        conversation_history = recovered_history
+```
+
 其返回值被解包为循环读取的局部变量（`1332-1342`）。随后初始化循环局部计数器（`1351-1399`）：`api_call_count=0`、`compression_attempts=0`、`max_compression_attempts`（默认 3）、`_turn_exit_reason="unknown"` 等。
 
 ### 3.2　主 while 循环
@@ -130,7 +145,22 @@ flowchart TD
 
 **两个值得专门指出的细节**：
 
-- **中断检查位于循环顶部**（`1430`），紧随 redirect drain 之后、`api_call_count` 自增之前。这保证中断能在一个工具回合的边界被尊重。
+- **中断检查位于循环顶部**（`1430`），紧随 redirect drain 之后、`api_call_count` 自增之前。这保证中断能在一个工具回合的边界被尊重：
+
+```python
+# conversation_loop.py:1426
+        # Reset per-turn checkpoint dedup so each iteration can take one snapshot
+        agent._checkpoint_mgr.new_turn()
+
+        # Check for interrupt request (e.g., user sent new message)
+        if agent._interrupt_requested:
+            interrupted = True
+            _turn_exit_reason = "interrupted_by_user"
+            if not agent.quiet_mode:
+                agent._safe_print("\n⚡ Breaking out of tool loop due to interrupt...")
+            break
+```
+
 - **工具调用回合的 assistant 消息在工具副作用执行之前就被持久化**（`_flush_messages_to_session_db`，`6325`）。若该持久化失败则立即 `break`（`6337-6345`），避免从仅存于内存的状态继续运行可能产生破坏性副作用的工具。
 
 ### 3.3　消息角色交替的维护
@@ -140,6 +170,23 @@ OpenAI 接口要求严格的 `assistant(tool_calls) → tool → tool …` 角�
 - `repair_message_sequence_with_cursor`（`1579`）修复 `tool→user` 或 `user→user` 的尾部；
 - `_sanitize_api_messages`（`1797`）为孤儿 tool 结果补桩或移除；
 - `_drop_thinking_only_and_merge_users`（`1807`）合并相邻 user 消息，并剔除"只有 thinking 没有可见输出/工具调用"的 assistant 轮（否则 Anthropic 会以 "final block cannot be thinking" 报 400），但历史中仍保留该 reasoning 块。
+
+这三步修复紧跟一次**空白规范化 + tool-call JSON 规范化**，目的是追求"比特级前缀"以最大化 KV cache 复用：
+
+```python
+# conversation_loop.py:1807-1827（节选）
+api_messages = agent._drop_thinking_only_and_merge_users(
+    api_messages,
+    drop_codex_reasoning_items=agent.api_mode != "codex_responses",
+)
+# Normalize message whitespace and tool-call JSON for consistent
+# prefix matching — enables KV cache reuse on local inference servers
+for am in api_messages:
+    if isinstance(am.get("content"), str):
+        am["content"] = am["content"].strip()
+_canonicalize_api_tool_calls(api_messages)
+_sanitize_messages_surrogates(api_messages)  # 防 Ollama 模型返回的 lone surrogate 崩 json.dumps
+```
 
 ---
 
@@ -155,6 +202,16 @@ reasoning 在两个层面被处理：
 
 - **持久化层**：reasoning 存于 `assistant_msg["reasoning"]`，用于轨迹存储；`reasoning_content` / `reasoning_details` / `codex_reasoning_items` 也保留在权威消息中。
 - **API 出口层**：`_copy_reasoning_content_for_api`（`run_agent.py:7238`）把 `reasoning` 复制为 `reasoning_content` 以维持多轮推理连续性；随后 `reasoning` 字段被 `pop`（`conversation_loop.py:1656-1657`），`finish_reason` 也被 `pop`（`1659`，因 Mistral 等严格 API 拒绝未知字段）。
+
+```python
+# conversation_loop.py:1652-1662
+agent._copy_reasoning_content_for_api(msg, api_msg)  # reasoning → reasoning_content
+if "reasoning" in api_msg:
+    api_msg.pop("reasoning")        # 仅用于轨迹存储，API 不认
+if "finish_reason" in api_msg:
+    api_msg.pop("finish_reason")    # Mistral 等严格 API 拒绝未知字段
+api_msg.pop("_thinking_prefill", None)  # 剥内部标记
+```
 - **Provider 适配**：`_reapply_reasoning_echo_for_provider`（`2201`）为需要侧信道 reasoning 的 provider（DeepSeek/Kimi/MiMo）补回 reasoning echo。
 
 ### 4.3　预填充（prefill）为何是临时的
@@ -174,7 +231,23 @@ if agent.prefill_messages:
 
 ## 第 5 章　系统提示构建
 
-系统提示由 `agent/system_prompt.py:build_system_prompt`（`561`）编排，调用 `prompt_builder.py` 的无状态拼装函数。核心不变量：**系统提示一回合内构建一次，缓存于 `_cached_system_prompt`，此后每轮逐字回放**（`conversation_loop.py:1704-1708`）。
+系统提示由 `agent/system_prompt.py:build_system_prompt`（`561`）编排，调用 `prompt_builder.py` 的无状态拼装函数。核心不变量：**系统提示一回合内构建一次，缓存于 `_cached_system_prompt`，此后每轮逐字回放**（`conversation_loop.py:1704-1708`）：
+
+```python
+# conversation_loop.py:1704
+        # Hermes invariant: the system prompt is built ONCE per session
+        # (cached on ``_cached_system_prompt``) and replayed verbatim on
+        # every turn. ``apply_anthropic_cache_control`` may split its stable
+        # prefix into content blocks on the wire, but the stored string and
+        # its byte-stability remain unchanged.
+        effective_system = active_system_prompt or ""
+        if agent.ephemeral_system_prompt:
+            effective_system = (effective_system + "\n\n" + agent.ephemeral_system_prompt).strip()
+        if effective_system:
+            api_messages = [{"role": "system", "content": effective_system}] + api_messages
+```
+
+注意 `ephemeral_system_prompt` 即便要拼也是**临时拼在通话副本上**（`api_messages[0]`），缓存于 `_cached_system_prompt` 的字符串本身从不被改写。
 
 ### 5.1　组装的片段
 
@@ -204,6 +277,20 @@ if agent.prefill_messages:
 - 三层守卫：`_defer_preflight`（粗糙估值噪声过大时跳过）、`_compression_cooldown`（摘要 LLM 失败冷却期）、`should_compress` 本身。
 - 每轮硬上限 `max_compression_attempts`（默认 3）。
 
+`should_compress_info`（`should_compress` 的带原因版本）把上述守卫浓缩为一个三段判定——未达阈值、被冷却/反抖动阻塞、或确实需要压缩：
+
+```python
+# context_compressor.py:2629
+        tokens = prompt_tokens if prompt_tokens is not None else self.last_prompt_tokens
+        if tokens < self.threshold_tokens:
+            return False, None
+        if self._automatic_compression_blocked():
+            return False, self._compression_block_reason() or "blocked"
+        return True, None
+```
+
+`_automatic_compression_blocked` 正是上面三层守卫（`_defer_preflight` / `_compression_cooldown` / 反抖动）的汇聚点；`reason` 非 `None` 时调用方据此向用户告警"会话超阈值却无法收缩"。
+
 ### 6.2　压缩算法
 
 `compress`（`context_compressor.py:6027`）的步骤：
@@ -216,6 +303,25 @@ if agent.prefill_messages:
 5. 重压缩时迭代更新前次摘要
 6. 孤儿 tool_call/tool_result 配对清理
 ```
+
+伪代码对应的真实入口位于 `compress` 方法体（先做廉价预筛，再做 token 预算边界）：
+
+```python
+# context_compressor.py:6126
+        # Phase 1: Prune old tool results (cheap, no LLM call)
+        messages, pruned_count = self._prune_old_tool_results(
+            messages, protect_tail_count=self.protect_last_n,
+            protect_tail_tokens=self.tail_token_budget,
+        )
+        # ...
+        # Phase 2: Determine boundaries
+        compress_start = self._protect_head_size(messages)
+        compress_start = self._align_boundary_forward(messages, compress_start)
+        # Use token-budget tail protection instead of fixed message count
+        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+```
+
+`protect_last_n` 由 `tail_token_budget` 兜底（即上文"防止臃肿的近期 tool run 锁死"），`compress_start:compress_end` 之间的窗口才是后续 LLM 摘要的输入。
 
 `protect_first_n` 在首次压缩后**衰减**，避免早期 user 轮被永久凝固；`protect_last_n` 由 token 地板封顶，防止臃肿的近期 tool run 锁死。摘要失败时设置 `_summary_failure_cooldown_until`（持久化到 SessionDB，跨进程/跨会话生效，30–60s 冷却）。
 
@@ -254,6 +360,31 @@ OpenRouter API (1h TTL, 磁盘 L2)
 | `redirect(text)` | 取消**仅当前模型请求**（执行工具期间降级为 `steer`），保留已完成消息/工具结果，把纠正作为真实 user 消息 append 后重试 | 仅模型请求 |
 
 `steer` 的包裹标记是**有界自描述格式**，并配 `STEER_CHANNEL_NOTE`（`prompt_builder.py:674`）告知模型只信任这一精确标记、忽略 tool 输出中的仿冒指令（防 prompt injection）。标记是不可变历史记录，故该 note 还定义了"仅在最新 tool 批且无后续 assistant 跟随时视为新消息"的一次性规则（`691-697`），防止历史重放时重复执行动作。
+
+`steer` 的写入与取出均由 `_pending_steer_lock` 守护——写入端在锁内累加文本（多次 `steer` 以换行拼接），循环则在 pre-API 与 post-tool 两个 drain 点用 `_drain_pending_steer` 取出并清空：
+
+```python
+# run_agent.py:3258
+        with _lock:
+            if self._pending_steer:
+                self._pending_steer = self._pending_steer + "\n" + cleaned
+            else:
+                self._pending_steer = cleaned
+        return True
+        # ...（循环在 pre-API 与 post-tool 两处调用 _drain_pending_steer）
+        # run_agent.py:3383
+        _lock = getattr(self, "_pending_steer_lock", None)
+        if _lock is None:
+            text = getattr(self, "_pending_steer", None)
+            self._pending_steer = None
+            return text
+        with _lock:
+            text = self._pending_steer
+            self._pending_steer = None
+        return text
+```
+
+注意 `_drain_pending_steer` 是**取出即清空**的原子语义：锁保证并发 `steer()` 不会与 drain 交错丢字，`_lock is None` 分支则为跳过 `__init__` 的测试桩留出退路。
 
 ### 7.2　预算与凭据池
 

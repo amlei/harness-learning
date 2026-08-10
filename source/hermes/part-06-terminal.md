@@ -24,7 +24,87 @@
 - **会话快照**：`init_session`（`634-755`）一次性捕获登录 shell 的 `export -p` + 函数（按名过滤 `_` 前缀的私有 helper）+ 别名；用 `mktemp + mv` **原子替换**快照文件，避免并发 `source` 读到半写文件。快照中**排除**会话身份变量（`HERMES_SESSION_*` 等），因为单一长寿命后端会服务多个会话。
 - **CWD 标记**：`_cwd_marker` 格式 `__HERMES_CWD_{session_id}__`；`_wrap_command` 在命令尾注入 `printf '\n{marker}%s{marker}\n' "$(pwd -P)"`，`_extract_cwd_from_output` 解析并剥离。
 
+```python
+# tools/environments/base.py:1311
+        self._before_execute()
+        exec_command, sudo_stdin = self._prepare_command(command)
+        if rewrite_compound_background:
+            from tools.terminal_tool import _rewrite_compound_background
+            exec_command = _rewrite_compound_background(exec_command)
+        effective_timeout = timeout or self.timeout
+        effective_cwd = cwd or self.cwd
+        if sudo_stdin is not None and stdin_data is not None:
+            effective_stdin = sudo_stdin + stdin_data
+        elif sudo_stdin is not None:
+            effective_stdin = sudo_stdin
+        else:
+            effective_stdin = stdin_data
+        wrapped = self._wrap_command(exec_command, effective_cwd)
+        login = not self._snapshot_ready and not self._prefer_nonlogin
+        proc = self._run_bash(
+            wrapped, login=login, timeout=effective_timeout, stdin_data=effective_stdin
+        )
+        result = self._wait_for_process(
+            proc, timeout=effective_timeout, bounded_capture=bounded_capture
+        )
+        self._update_cwd(result)
+        return result
+```
+
+```python
+# tools/terminal_tool.py:706
+        token, next_i = _read_shell_token(command, i)
+        if command_start and token == "sudo":
+            out.append("sudo -S -p ''")
+            sudo_count += 1
+        else:
+            out.append(token)
+    ...
+# tools/terminal_tool.py:1048
+    if has_configured_password or sudo_password:
+        # Trailing newline is required: sudo -S reads one line per invocation.
+        # Compound commands (`sudo a && sudo b`) need one password line each.
+        password_line = sudo_password + "\n"
+        return transformed, password_line * sudo_count
+```
+
+```python
+# tools/environments/base.py:710
+        try:
+            proc = self._run_bash(bootstrap, login=True, timeout=self._snapshot_timeout)
+            result = self._wait_for_process(proc, timeout=self._snapshot_timeout)
+            if int(result.get("returncode") or 0) != 0:
+                raise RuntimeError(
+                    f"snapshot bootstrap failed with exit code {result.get('returncode')}"
+                )
+            self._snapshot_ready = True
+            self._update_cwd(result)
+```
+
 **工厂** `_create_environment`（`terminal_tool.py:1602-1767`）是 `env_type → 实例` 的 if/elif 链（非注册表）：
+
+```python
+# tools/terminal_tool.py:1635
+    if env_type == "local":
+        return _LocalEnvironment(cwd=cwd, timeout=timeout)
+
+    elif env_type == "docker":
+        _maybe_reap_docker_orphans(cc)
+        return _DockerEnvironment(
+            image=image, cwd=cwd, timeout=timeout,
+            cpu=cpu, memory=memory, disk=disk,
+            persistent_filesystem=persistent, task_id=task_id,
+            # ...
+        )
+
+    # ... singularity / modal(managed|direct) / daytona / vercel_sandbox / ssh
+
+    else:
+        raise ValueError(
+            f"Unknown environment type: {env_type}. Use 'local', 'docker', "
+            f"'singularity', 'modal', 'daytona', 'vercel_sandbox', or 'ssh'"
+        )
+```
 
 ```mermaid
 flowchart LR
@@ -50,6 +130,30 @@ flowchart LR
 ### 3.1　local
 
 `LocalEnvironment`（`local.py:1414-1688`）纯 spawn-per-call。`_run_bash` 用 **`start_new_session=True`**（不是 `preexec_fn=os.setsid`，后者在多线程应用不安全）让子进程成为新会话/进程组 leader；Windows 走 `creationflags=windows_hide_flags()` 隐藏控制台。`_kill_process` 据此做整组杀：`os.killpg(pgid, SIGTERM)` → 等 1s → `SIGKILL -pgid`。
+
+```python
+# tools/environments/local.py:1530
+        _popen_kwargs = {"creationflags": windows_hide_flags()} if _IS_WINDOWS else {}
+
+        proc = subprocess.Popen(
+            args,
+            text=True,
+            env=run_env,
+            encoding="utf-8",
+            errors="replace",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
+            start_new_session=True,
+            cwd=_popen_cwd,
+            **_popen_kwargs,
+        )
+        if not _IS_WINDOWS:
+            try:
+                proc._hermes_pgid = os.getpgid(proc.pid)
+            except ProcessLookupError:
+                pass
+```
 
 `build_subprocess_env`（`local.py:659-719`）是非终端 spawn 的统一 env 工厂（浏览器、ACP 执行器、TUI Node host），`scrub_secrets=True` 时剥离 provider 密钥 blocklist + Hermes 内部密钥。
 
@@ -90,9 +194,42 @@ flowchart LR
 
 输出在采集时就被 `_BoundedOutputCollector`（`base.py:55-204`）以 40/60 头尾窗口有界保留，避免 verbose 命令 OOM；溢出部分 tee 到 spill 文件（5MB cap），供模型用 `read_file`/`search_files` 取回中间部分而不必重跑命令。
 
+```python
+# tools/environments/base.py:66
+    _SPILL_CAP_CHARS = 5_000_000
+
+    def __init__(self, max_chars: int, spill_path: "Path | None" = None):
+        self.max_chars = max(1, int(max_chars))
+        self._head_limit = int(self.max_chars * 0.4)
+        self._tail_limit = self.max_chars - self._head_limit
+        self._head: list[str] = []
+        self._tail: deque[str] = deque()
+        self._head_chars = 0
+        self._tail_chars = 0
+        self._total_chars = 0
+        self._lock = threading.Lock()
+        self._spill_path = spill_path
+        self._spill_fh: IO[str] | None = None
+        self._spill_chars = 0
+        self._spill_capped = False
+```
+
 ### 4.2　环境缓存与生命周期
 
 `_active_environments` 与 `_last_activity` 按 `task_id` 缓存环境。`_resolve_container_task_id`（`1274-1306`）是关键的"折叠"逻辑：顶层 agent 的 `task_id=None` 与所有 delegate 子 agent 的 ID 都**折叠为 `"default"`**，以便共享同一个长寿命容器；只有注册了隔离性 override 的 RL/benchmark 任务才获得独立沙箱。
+
+```python
+# tools/terminal_tool.py:1298
+    _ISOLATION_KEYS = frozenset({
+        "docker_image", "modal_image", "singularity_image",
+        "daytona_image", "env_type",
+    })
+    if task_id and task_id in _task_env_overrides:
+        overrides = _task_env_overrides[task_id]
+        if set(overrides.keys()) & _ISOLATION_KEYS:
+            return task_id
+    return "default"
+```
 
 清理走后台守护线程，每 60s 扫一次。**关键设计**：清理分两阶段——在 `_env_lock` 内只摘除追踪记录，**在锁外**才调用 `env.cleanup()`（modal/docker 拆除可阻塞 10-15s，锁内调用会卡住所有并发工具调用）。
 
@@ -105,6 +242,28 @@ flowchart LR
 ## 第 5 章　审批机制（approval.py）
 
 `approval.py`（4558 行）是三层防御 + 多渠道审批的整合。入口 `check_all_command_guards`（`approval.py:3738`）由终端工具在 `force=False` 时调用。
+
+```python
+# tools/approval.py:3754
+    if _should_skip_container_guards(env_type, has_host_access=has_host_access):
+        return {"approved": True, "message": None}
+
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        return _hardline_block_result(hardline_desc, command)
+
+    is_sudo_guess, sudo_guess_desc = _check_sudo_stdin_guard(command)
+    if is_sudo_guess:
+        return _sudo_stdin_block_result(sudo_guess_desc)
+
+    deny_pattern = _match_user_deny_rule(command)
+    if deny_pattern is not None:
+        return _user_deny_block_result(deny_pattern)
+
+    approval_mode = _get_approval_mode()
+    if _YOLO_MODE_FROZEN or is_current_session_yolo_enabled() or approval_mode == "off":
+        return {"approved": True, "message": None}
+```
 
 ### 5.1　检测层
 
@@ -167,7 +326,50 @@ flowchart TD
 
 `ProcessSession` 字段：`id`（`proc_<12hex>`）、`command`、`pid`、`output_buffer`（滚动 200KB）、`notify_on_complete`、`watch_patterns`、watcher 路由元数据。限制：`MAX_PROCESSES=64`（LRU 剪枝）、`FINISHED_TTL_SECONDS=1800`。
 
+```python
+# tools/process_registry.py:91
+@dataclass
+class ProcessSession:
+    """A tracked background process with output buffering."""
+    id: str
+    command: str
+    task_id: str = ""
+    pid: Optional[int] = None
+    process: Optional[subprocess.Popen] = None
+    env_ref: Any = None
+    started_at: float = 0.0
+    exited: bool = False
+    exit_code: Optional[int] = None
+    output_buffer: str = ""
+    max_output_chars: int = MAX_OUTPUT_CHARS
+    notify_on_complete: bool = False
+    watch_patterns: List[str] = field(default_factory=list)
+```
+
 **notify_on_complete**：进程退出时往 `completion_queue` 放一条事件。**watch_patterns**：reader 线程把新输出喂给 `_check_watch_patterns`，硬限速每会话每 15s 最多一条通知；连续 3 个 strike 窗口后**永久禁用 watch 并降级到 notify_on_complete**。
+
+```python
+# tools/process_registry.py:274
+        with session._lock:
+            # Case 1: still inside the cooldown — drop, count one strike
+            # (only once per window); at the limit, disable + promote.
+            if session._watch_cooldown_until and now < session._watch_cooldown_until:
+                session._watch_suppressed += len(matched_lines)
+                if not session._watch_strike_candidate:
+                    session._watch_strike_candidate = True
+                    session._watch_consecutive_strikes += 1
+                    if session._watch_consecutive_strikes >= WATCH_STRIKE_LIMIT:
+                        session._watch_disabled = True
+                        session.notify_on_complete = True
+                return_early = True
+            else:
+                # Case 2: cooldown expired — if the prior window was clean
+                # (no strike candidate), reset the consecutive-strike run.
+                if session._watch_cooldown_until and not session._watch_strike_candidate:
+                    session._watch_consecutive_strikes = 0
+                session._watch_strike_candidate = False
+                session._watch_cooldown_until = now + WATCH_MIN_INTERVAL_SECONDS
+```
 
 **完成检测与新回合触发**：
 - **CLI**：`drain_notifications` 在 agent 回合后被消费，把 completion_queue 事件格式化成 `[IMPORTANT: Background process proc_xxx completed...]` 注入下一轮。

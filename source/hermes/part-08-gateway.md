@@ -44,13 +44,52 @@ agent:<profile_ns>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>]
 
 - **DM** 总是带 `chat_id`（隔离每个私聊）；无 `chat_id` 时回退到 `participant_id`，防止"无 chat_id 的 DM 塌缩进同一个共享会话导致跨用户历史泄漏"。
 - **Thread** 默认**共享**（所有参与者共享一个会话——Telegram forum、Discord thread、Slack thread 的预期 UX）。
-- **Discord auto-thread 连续性**：`prospective_thread_id` 解决"频道发起消息→后续落到自动创建的 thread"的会话一致性问题。
+- **Discord auto-thread 连续性**：`prospective_thread_id` 解决“频道发起消息→后续落到自动创建的 thread”的会话一致性问题。
+
+```python
+# gateway/session.py:1116
+        # No chat_id — fall back to the sender's own identifier before the
+        # bare per-platform sink.  Without this, every DM from every user that
+        # arrives without a chat_id (non-standard adapters / synthetic sources)
+        # collapses into one shared "<ns>:<platform>:dm" session, and a
+        # single cached agent ends up serving multiple people's conversations —
+        # cross-user history bleed.  participant_id keeps DMs isolated per user.
+        dm_participant_id = source.user_id_alt or source.user_id
+        if dm_participant_id and source.platform == Platform.WHATSAPP:
+            dm_participant_id = (
+                canonical_whatsapp_identifier(str(dm_participant_id))
+                or dm_participant_id
+            )
+        if dm_participant_id:
+            dm_parts.append(str(dm_participant_id))
+            if source.thread_id:
+                dm_parts.append(source.thread_id)
+            return ":".join(str(part) for part in dm_parts)
+```
 
 ### 3.2　持久化与 SessionStore
 
 `SessionStore` 维护内存索引 `_entries`，持久化到 **state.db 的 `gateway_routing` 表（主）+ sessions.json（遗留镜像）**。读取顺序：先读 `gateway_routing`，再用 sessions.json 补 DB 缺失的键；DB 优先。
 
-**快/慢双写路径**：`_save_entry` 是单行 UPSERT 的快路径（稳态每轮只 bump `updated_at`/`last_prompt_tokens`）；`_save_entries` 是全量重写，用于结构性变迁。两者共享 `_routing_generation` 单调计数器，保证"旧覆盖新"在两个方向都不可能。
+**快/慢双写路径**：`_save_entry` 是单行 UPSERT 的快路径（稳态每轮只 bump `updated_at`/`last_prompt_tokens`）；`_save_entries` 是全量重写，用于结构性变迁。两者共享 `_routing_generation` 单调计数器，保证“旧覆盖新”在两个方向都不可能。
+
+```python
+# gateway/session.py:1653
+            try:
+                with save_lock:
+                    if getattr(self, "_persisted_routing_generation", 0) >= revision:
+                        return
+                    fast_persisted = getattr(self, "_fast_persisted_entries", None)
+                    if fast_persisted is None:
+                        fast_persisted = {}
+                        self._fast_persisted_entries = fast_persisted
+                    persisted = fast_persisted.get(session_key)
+                    if persisted is not None and persisted[0] >= revision:
+                        return
+                    saver(session_key, entry_json, scope=self._routing_scope())
+                    fast_persisted[session_key] = (revision, entry_json)
+                return
+```
 
 ### 3.3　状态机
 
@@ -62,6 +101,24 @@ agent:<profile_ns>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>]
 4. 否则返回原 entry。
 
 **带活动后台进程的会话永不被到期或剪枝**——构造器注入的 `has_active_processes_fn` 回调失败时 fail-closed 保持会话存活。
+
+```python
+# gateway/session.py:838
+    # When True the next call to get_or_create_session() will auto-reset
+    # this session (create a new session_id) so the user starts fresh.
+    # Set by /stop to break stuck-resume loops (#7536).
+    suspended: bool = False
+
+    # When True the session was interrupted by a gateway restart/shutdown
+    # drain timeout, but recovery is still expected.  Unlike ``suspended``,
+    # ``resume_pending`` preserves the existing session_id on next access —
+    # the user stays on the same transcript and the agent auto-continues
+    # from where it left off.  Cleared after the next successful turn.
+    # Escalation to ``suspended`` is handled by the existing
+    # ``.restart_failure_counts`` stuck-loop counter (#7536), not by a
+    # parallel counter on this entry.
+    resume_pending: bool = False
+```
 
 ### 3.4　跨重启连续性
 
@@ -83,7 +140,47 @@ agent:<profile_ns>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>]
 
 `_active_sessions` 和 `_pending_messages` 是单槽：每个 session_key 一个"下一个待处理"槽，重复 send 时覆盖（burst collapse）。守卫必须在**派生后台任务之前同步安装**，关闭"第二条消息在 task 启动前也通过检查并派生重复 task"的竞态窗口。
 
-`_heal_stale_session_lock` 是 split-brain 自愈：若 `_active_sessions` 仍有键但其 owner task 已 done/cancelled，清锁放行，否则用户会被困在无限的"Interrupting current task…"里直到重启。
+```python
+# gateway/platforms/base.py:2456
+    existing = pending_messages.get(session_key)
+    if existing:
+        existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
+        incoming_is_photo = event.message_type == MessageType.PHOTO
+        existing_has_media = bool(existing.media_urls)
+        incoming_has_media = bool(event.media_urls)
+
+        if existing_is_photo and incoming_is_photo:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            _invalidate_pending_stt_cache(existing)
+            return
+```
+
+`_heal_stale_session_lock` 是 split-brain 自愈：若 `_active_sessions` 仍有键但其 owner task 已 done/cancelled，清锁放行，否则用户会被困在无限的“Interrupting current task…”里直到重启。
+
+```python
+# gateway/platforms/base.py:5593
+        if session_key in self._active_sessions:
+            # Certain commands must bypass the active-session guard and be
+            # dispatched directly to the gateway runner.  Without this, they
+            # are queued as pending messages and either:
+            #   - leak into the conversation as user text (/stop, /new), or
+            #   - deadlock (/approve, /deny — agent is blocked on Event.wait)
+            #
+            # Dispatch inline: call the message handler directly and send the
+            # response.  Do NOT use _process_message_background — it manages
+            # session lifecycle and its cleanup races with the running task
+            # (see PR #4926).
+            cmd = event.get_command()
+            from hermes_cli.commands import (
+                is_interrupt_then_dispatch,
+                should_bypass_active_session,
+            )
+
+            if should_bypass_active_session(cmd):
+```
 
 ### 4.2　守卫 ②：gateway runner 的运行中代理拦截
 
@@ -91,7 +188,46 @@ agent:<profile_ns>:<platform>:<chat_type>[:<scope_id>][:<chat_id>][:<thread_id>]
 
 - `dispatch`：`/status` `/approve` `/deny` `/restart` 等直接跑；
 - `interrupt_then_dispatch`：`/stop`（先 interrupt 再清会话）、`/new`（先 interrupt 再 reset）、`/queue`（不打断，FIFO 排队）；
-- `reject`：其余命令返回"Agent is running — /<name> can't run mid-turn…"。
+- `reject`：其余命令返回“Agent is running — /<name> can't run mid-turn…”。
+
+```python
+# gateway/run.py:14101
+        """Dispatch a recognized slash command while an agent is running.
+
+        Resolution order:
+          1. ``busy_handler`` — special mid-run variant (e.g. /goal's
+             control-verb whitelist, /queue's FIFO enqueue, /model's
+             custom reject text).
+          2. ``busy_policy == "dispatch"`` — the command's normal handler.
+          3. Catch-all busy-reject text. Rejecting is required rather than
+             falling through to interrupt + discard: commands like /model,
+             /reasoning, /voice, /insights, /title, /resume, /retry,
+             /undo, /compress, /usage, /reload-mcp, /sethome, /reset (all
+             registered as Discord slash commands) would interrupt the
+             agent AND get silently discarded by the slash-command safety
+             net, producing a zero-char response. See #5057, #6252, #10370.
+        """
+```
+
+```python
+# gateway/run.py:14116
+        name = cmd_def.name
+        policy = getattr(cmd_def, "busy_policy", "reject")
+        handler_key = getattr(cmd_def, "busy_handler", None)
+
+        if handler_key:
+            special = {
+                "start": self._busy_start_command,
+                "stop": self._busy_stop_command,
+                "new": self._busy_new_command,
+                "queue": self._busy_queue_command,
+                "steer": self._busy_steer_command,
+                "egress": self._busy_egress_command,
+                "goal": self._busy_goal_command,
+            }.get(handler_key)
+            if special is not None:
+                return await special(event, quick_key, source)
+```
 
 ### 4.3　为何需要两道守卫
 
@@ -151,6 +287,25 @@ agent 运行时新消息到达，三种语义：
 
 规范用法：适配器在 `connect()` 里 `acquire_scoped_lock`，在 `disconnect()`/`stop()` 里 `release_scoped_lock`。
 
+```python
+# gateway/status.py:1457
+        if stale:
+            # Remove the stale lock ATOMICALLY by renaming it to a tombstone
+            # instead of unlinking. With unlink()+O_EXCL, two racing starters
+            # could both observe "removed" (the second unlink() silently
+            # deleting the first racer's freshly-created lock) and both win.
+            # os.replace() is atomic: exactly one racer claims the stale
+            # file; the loser gets FileNotFoundError and falls through to
+            # the O_EXCL create below, where at most one process succeeds.
+            tombstone = lock_path.with_name(lock_path.name + ".stale")
+            try:
+                os.replace(lock_path, tombstone)
+            except FileNotFoundError:
+                # Another racer already claimed the stale lock (and may have
+                # created a fresh one) — let O_EXCL below decide the winner.
+                pass
+```
+
 ---
 
 ## 第 7 章　Cron 投递与 DM 配对
@@ -183,6 +338,29 @@ agent 运行时新消息到达，三种语义：
 - `typed_command_prefix`（默认 `/`，Slack/Matrix 用 `!`）
 - `interactive_resume`（启动恢复中断会话时是否向人类发问）
 
+```python
+# gateway/platforms/base.py:2692
+    # Whether this adapter's ``send()`` splits long content into multiple
+    # messages via ``truncate_message()``.  When True, the delivery router
+    # (gateway/delivery.py) skips gateway-level truncation and lets the
+    # adapter chunk natively — preserving full output on platforms that
+    # support multi-message delivery (Discord, Telegram, …).  Default False
+    # (conservative); adapters verified to chunk in ``send()`` set True.
+    splits_long_messages: bool = False
+
+    # The command prefix users can always TYPE on this platform to reach
+    # Hermes commands.  Default "/" (most platforms deliver "/approve" etc.
+    # as plain message text).  Platforms where typing a leading "/" is
+    # intercepted or restricted by the client (Slack blocks native slash
+    # commands inside threads; Matrix clients reserve "/" for client-local
+    # commands) ship a "!" alias rewrite in their adapter and set this to
+    # "!" so user-facing instruction text ("Reply `!approve` ...") tells
+    # users the form that actually works everywhere.  Capability flag —
+    # shared prompt builders read it via getattr(adapter,
+    # "typed_command_prefix", "/"); no per-platform branching at call sites.
+    typed_command_prefix: str = "/"
+```
+
 四个抽象方法：`connect`、`disconnect`、`send`、`get_chat_info`。其余方法（`edit_message`、`delete_message`、`send_typing`、`send_image/voice/video/document`、交互 UX）有默认实现，子类按需覆盖。
 
 ### 8.3　入站核心：handle_message 与"同步设守卫、异步派任务"
@@ -194,6 +372,22 @@ agent 运行时新消息到达，三种语义：
 3. 入口自愈（split-brain）；
 4. 若会话忙：bypass 命令内联派发、photo burst 合并、文本 queue debounce、其余入队；
 5. 若会话空闲：`_start_session_processing` **先同步**把守卫塞进 `_active_sessions` **再** `create_task`。
+
+```python
+# gateway/platforms/base.py:5383
+        """Spawn a background processing task under the given session guard.
+
+        Returns True on success.  If the runtime stubs ``create_task`` with a
+        non-Task sentinel (some tests do this), the guard is rolled back and
+        False is returned so the caller isn't left holding a half-installed
+        session lock.
+        """
+        guard = interrupt_event or asyncio.Event()
+        self._active_sessions[session_key] = guard
+
+        task = asyncio.create_task(self._process_message_background(event, session_key))
+        self._session_tasks[session_key] = task
+```
 
 ### 8.4　适配器注册与工厂
 

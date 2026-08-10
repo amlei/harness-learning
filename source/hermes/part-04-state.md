@@ -87,11 +87,57 @@ erDiagram
     }
 ```
 
+`SCHEMA_SQL` 中 `messages` 表的 DDL（节选与持久化语义相关的列）：
+
+```sql
+-- hermes_state_common.py:265
+CREATE TABLE IF NOT EXISTS messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT NOT NULL REFERENCES sessions(id),
+    role TEXT NOT NULL,
+    content TEXT,
+    tool_call_id TEXT,
+    tool_calls TEXT,
+    tool_name TEXT,
+    -- ...timestamp / token_count / reasoning / codex_* / platform_message_id...
+    active INTEGER NOT NULL DEFAULT 1,
+    compacted INTEGER NOT NULL DEFAULT 0,
+    api_content TEXT,
+    display_kind TEXT,
+    display_metadata TEXT
+);
+```
+
 `SCHEMA_VERSION = 25`；`FTS_STORAGE_VERSION = 1`，与主版本**解耦**。
 
 ### 2.2　三套 FTS5 虚拟表
 
 - **`messages_fts`**：v23 外部内容表（`content='messages', content_rowid='id'`），索引 `content, tool_name, tool_calls`。三个触发器（insert/delete/update）通过 `state_meta` 的水位键实现**延迟重建门控**，避免后台重建期间对不在索引中的行执行 FTS5 'delete' 而损坏索引。UPDATE 触发器用窄列 `AFTER UPDATE OF content, tool_name, tool_calls`，非内容列写入完全不触发 FTS I/O。
+
+`messages_fts` 的外部内容表与门控触发器（水位键取自 `state_meta`，无重建时 `COALESCE` 把谓词化为恒真）：
+
+```sql
+-- hermes_state_common.py:416
+CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
+    content, tool_name, tool_calls,
+    content='messages', content_rowid='id'      -- v23 外部内容表
+);
+
+CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages
+WHEN (new.id > COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                         WHERE key = 'fts_rebuild_high_water'), -1)
+   OR new.id <= COALESCE((SELECT CAST(value AS INTEGER) FROM state_meta
+                          WHERE key = 'fts_rebuild_progress'), -1))   -- 水位键门控
+BEGIN
+    INSERT INTO messages_fts(rowid, content, tool_name, tool_calls)
+    VALUES (new.id, new.content, new.tool_name, new.tool_calls);
+END;
+
+-- 窄列 UPDATE：非内容列写入完全不触发 FTS I/O
+CREATE TRIGGER IF NOT EXISTS messages_fts_update
+AFTER UPDATE OF content, tool_name, tool_calls ON messages WHEN (...);
+```
+
 - **`messages_fts_trigram`**：`tokenize='trigram'`，通过视图**排除 `role='tool'` 行**——tool 行约占消息字节的 90% 且多为机器噪声（base64、文件转储），故仅由标准 `messages_fts` 索引。
 - **`messages_fts_cjk`**：基于可加载扩展 `cjk_unicode61`，bigram 分词，专门服务 CJK 查询。
 
@@ -102,6 +148,26 @@ erDiagram
 1. `executescript(SCHEMA_SQL)` 创建缺失表；
 2. `_reconcile_columns`（`:335`）用内存 SQLite 解析 `SCHEMA_SQL` 得到期望列集合，对每张实表 `PRAGMA table_info`，`ALTER TABLE ADD COLUMN` 补齐缺失列——**新增列只需加进 `SCHEMA_SQL`**，无需版本门控迁移；
 3. 版本门控链（`:667-892`）仅保留**无法声明式表达**的数据迁移（如 v16 标记 delegate 子会话、v18 从 sessions.json 回填、v20 按 model 播种 `session_model_usage`、v25 调用 `_dedupe_legacy_system_prompts` 把内联 system_prompt 搬进内容寻址表）。
+
+声明式列调和的差量循环——期望列集合由内存 SQLite 解析 `SCHEMA_SQL` 得到，对每张实表 `PRAGMA table_info` 后 `ADD COLUMN` 补齐差量：
+
+```python
+# hermes_state_schema.py:348
+expected = self._parse_schema_columns(SCHEMA_SQL)   # 内存 SQLite 解析 SCHEMA_SQL
+for table_name, declared_cols in expected.items():
+    try:
+        rows = cursor.execute(f'PRAGMA table_info("{table_name}")').fetchall()
+    except sqlite3.OperationalError:
+        continue  # executescript 后表应已存在
+    live_cols = {row[1] if isinstance(row, (tuple, list)) else row["name"]
+                 for row in rows}
+    for col_name, col_type in declared_cols.items():
+        if col_name not in live_cols:                     # 期望 - 实有 = 缺失列
+            safe_name = col_name.replace('"', '""')
+            cursor.execute(
+                f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
+            )
+```
 
 关键设计：v23 FTS 存储优化**解耦于主版本**——主 `schema_version` 照常推进，FTS 布局由独立 `fts_storage_version` 标记，只有显式 `hermes sessions optimize-storage` 才迁移，避免每次大开销磁盘操作惊扰用户。
 
@@ -115,7 +181,35 @@ erDiagram
 
 行写入由 `_insert_message_rows`（`:6975`）统一处理。多模态/结构化内容经 `_encode_content`（`:6380`）序列化；`api_content` 是字节保真 sidecar——记录实际发给 API 的内容（与清洁 `content` 不同时），供 prompt-cache 稳定的重放。
 
+`_encode_content` 的关键是**哨兵前缀**：sqlite3 只能绑 `str`/`bytes`/`int`/`float`/`None`，多模态 content 的部件列表（`[{"type":"text",...},{"type":"image_url",...}]`）无法直接绑定；但若对所有内容一律 `json.dumps`，普通字符串会与"恰好是 JSON 文本的字符串"无法区分，读回时被错误解析。哨兵 `\x00json:`（NUL 字节在正常文本中非法，不可能与用户内容碰撞）前缀化结构化载荷，`_decode_content` 仅在检测到该前缀时才剥离并 `json.loads` 还原，标量字符串原样穿透：
+
+```python
+# hermes_state.py:6377
+_CONTENT_JSON_PREFIX = "\x00json:"   # NUL 字节在正常文本中非法 → 不可能与用户内容碰撞
+
+@classmethod
+def _encode_content(cls, content):
+    if isinstance(content, str):
+        return _sanitize_surrogates(content)                  # 字符串原样（仅清孤立 UTF-16 代理对）
+    if content is None or isinstance(content, (bytes, int, float)):
+        return content                                         # sqlite 原生可绑定标量：原样返回
+    return cls._CONTENT_JSON_PREFIX + json.dumps(content)     # list/dict → 哨兵 + JSON
+```
+
 **排序按 AUTOINCREMENT id 而非 timestamp**——`append_message` 用 `time.time()` 打戳，但该值非单调（WSL2、NTP 跳变、VM/笔记本睡眠恢复）；按 timestamp 排序会让 assistant 的 tool_calls 行排到 tool 响应之后，重放时触发 HTTP 400。
+
+虽以 id 为权威序，`_insert_message_rows` 仍在批内**强制时间戳严格递增**——否则数十条共享同一 `time.time()` 秒的消息会让任何按 timestamp 的下游消费（展示、排序启发式）看到乱序或平局：
+
+```python
+# hermes_state.py:6984
+now_ts = time.time()
+for msg in messages:
+    message_timestamp = now_ts                       # 默认继承批当前时间（消息自带 timestamp 则覆盖）
+    # ... INSERT INTO messages (... timestamp ...) VALUES (..., message_timestamp, ...)
+    now_ts = max(now_ts + 1e-6, message_timestamp + 1e-6)   # 下一条必严格晚于本条
+```
+
+`now_ts + 1e-6` 保证下一行晚于本行；`max(message_timestamp + 1e-6)` 在消息自带更晚的显式时间戳时采用之，但始终越过上一行——批内序因此既单调又与 AUTOINCREMENT id 一致。
 
 ### 3.2　非破坏式压缩：`archive_and_compact`
 
@@ -124,6 +218,31 @@ erDiagram
 - 实时上下文加载（`get_messages`）默认 `WHERE active=1`，模型只重载压缩集；
 - 归档的原行（`active=0, compacted=1`）**保持可检索**——`search_messages` 默认含 `compacted=1` 行，而 rewind/undo 行（`active=0, compacted=0`）则隐藏；
 - FTS 触发器按 INSERT/DELETE 维护、不依赖 active/compacted，故翻 `active=0` 是内容保留的 UPDATE，索引项不丢。
+
+事务内的三步序列——软归档原行、插入压缩集、刷新活跃计数——全部包在 `_execute_write` 的单个 `BEGIN IMMEDIATE` 内：
+
+```python
+# hermes_state.py:7193
+def _do(conn):
+    # 1) 软归档所有 active=1 行：compacted=1 标记"被摘要"（vs rewind 的 compacted=0）
+    conn.execute(
+        "UPDATE messages SET active = 0, compacted = 1 "
+        "WHERE session_id = ? AND active = 1",
+        (session_id,),
+    )
+    # 2) 压缩后的消息集作为新的 active=1 行插入
+    inserted, tool_calls_total = self._insert_message_rows(
+        conn, session_id, compacted_messages
+    )
+    # 3) message_count 只反映活跃集（归档行仍在盘但不计入）
+    conn.execute(
+        "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+        (inserted, tool_calls_total, session_id),
+    )
+    return inserted
+
+return self._execute_write(_do)   # 单个 BEGIN IMMEDIATE 事务
+```
 
 这是"用户的对话历史是事实记录"哲学的体现：rewind 可撤回（`active=0, compacted=0` 隐藏），压缩只摘要（`compacted=1` 保留可检索）。
 
@@ -142,6 +261,40 @@ erDiagram
 `end_reason` 是会话状态机的核心字段，取值含 `compression`、`session_reset`、`session_switch`、`branched`、`orphaned_compression`、`agent_close` 等。
 
 **压缩链（compression lineage）**：上下文压缩结束当前会话（`end_reason='compression'`）并 fork 一个 `parent_session_id` 指向父的子会话。`get_compression_tip`（`:5925`）沿父→子边前向遍历，**排除**分支/委派/工具子会话，返回活跃 tip；`resolve_resume_session_id`（`:7382`）先跳到 tip，再下溯找消息最多的节点，保证 resume 加载压缩后的延续而非压缩前的旧转录。
+
+`get_compression_tip` 的"排除"不在应用层、而在 SQL 谓词里——关键是**边的判定**：父必须以 `end_reason='compression'` 结束才视作压缩延续边（旧逻辑用 `child.started_at >= parent.ended_at` 判序，但 gateway/压缩竞争能让真延续先于父的 `ended_at` 落行，stale websocket 又造出满足时间判定的兄弟——resume 跟错兄弟、最新消息"丢失"）：
+
+```sql
+-- hermes_state.py:5952  （f-string 内；源码中 '{}' 写为 '{{}}'）
+SELECT child.id FROM sessions parent
+JOIN sessions child ON child.parent_session_id = parent.id
+WHERE parent.id = ?
+  AND parent.end_reason = 'compression'        -- 只走"压缩延续"边（取代旧的 started_at>=ended_at 判序）
+  AND json_extract(COALESCE(child.model_config, '{}'), '$._branched_from') IS NULL
+  AND json_extract(COALESCE(child.model_config, '{}'), '$._delegate_from') IS NULL
+  AND COALESCE(child.source, '') != 'tool'     -- 排除分支/委派/工具子会话
+ORDER BY CASE WHEN child.end_reason = 'compression' THEN 0   -- 仍在压缩链 > 仍活 > 已闭（ws_orphan_reap）
+              WHEN child.ended_at IS NULL THEN 1 ELSE 2 END,
+         child.started_at DESC, child.id DESC
+LIMIT 1
+```
+
+ORDER BY 的优先级确保多候选时选仍在压缩链的子节点，而非已 `ws_orphan_reap` 关闭的 stale 兄弟。`resolve_resume_session_id` 复用同一组排除谓词下溯，但"找最多消息节点"的精确实现是**沿合法子边逐层、每遇有任意消息的节点即更新 best**——tip 可能是刚 fork、尚未 flush 的空壳，需下溯到真正持有消息的最深节点（非按 `message_count` 比大小）：
+
+```python
+# hermes_state.py:7420
+tip = self.get_compression_tip(session_id)         # ① 先跳到压缩链活跃 tip
+if tip and tip != session_id:
+    session_id = tip
+best = None
+for _ in range(32):                                 # ② 下溯合法子边（排除谓词同上）
+    row = self._conn.execute(
+        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1", (current,)).fetchone()
+    if row is not None:
+        best = current                              # 有任意消息即记 best（不是 message_count 比大小）
+    ...                                             # 取最新合法子节点为 current，无则 break
+return best if best is not None else session_id
+```
 
 ```
 root (end_reason='compression') → child1 (end_reason='compression') → child2 (live tip)
@@ -169,11 +322,48 @@ elif cjk_count>=3:       → messages_fts_trigram
 else:                    → LIKE 全表扫描
 ```
 
+四条路由的守卫谓词（① 非 CJK 走默认 `sql` 的 `messages_fts MATCH`，②/③/④ 在 `is_cjk` 分支内按能力与 token 长度择优）：
+
+```python
+# hermes_state_search.py:1511
+is_cjk = self._contains_cjk(query)
+if is_cjk:
+    raw_query = query.strip('"').strip()
+    cjk_count = self._count_cjk(raw_query)
+    _wants_tool_rows = bool(role_filter) and "tool" in role_filter   # tool → LIKE
+    # ② CJK-bigram 路由（messages_fts_cjk）
+    if (self._fts_cjk_available and not _wants_tool_rows
+            and not self._has_lone_cjk_run(raw_query)):
+        ...  # MATCH messages_fts_cjk
+    # ③ trigram 路由：每 token 需 ≥3 CJK 字符
+    if (not _trigram_succeeded and cjk_count >= 3 and not _any_short_cjk
+            and self._trigram_available and not _wants_tool_rows):
+        ...  # MATCH messages_fts_trigram
+    # ④ LIKE 全表兜底（短 CJK / role=tool）
+    if not _trigram_succeeded:
+        ...  # 全表 LIKE 扫描
+else:
+    cursor = conn.execute(sql, params)   # ① 非 CJK：messages_fts MATCH（默认 sql）
+```
+
 CJK 路由有精细判定：trigram 需每 token ≥3 CJK 字符；`role_filter=['tool']` 强制走 LIKE（tool 行不在 trigram/cjk 索引）。
 
 ### 5.3　snippet、context 与自愈
 
 snippet 由 FTS5 `snippet(messages_fts, -1, '>>>', '<<<', '...', 40)` 生成；每条命中附加前后各 1 条 context。运行时 FTS 损坏自愈：MATCH 读抛 `DatabaseError` 时，`_try_runtime_fts_rebuild`（`hermes_state.py:2942`）一次性就地 `rebuild_fts()` 后重试。后台 FTS backfill 期间未被索引的区间，由 `_search_unindexed_gap`（`:1953`）对该 id 区间做有界 LIKE 扫描补足。
+
+"有界"的边界即 backfill 水位键 `(fts_rebuild_progress, fts_rebuild_high_water]`（与第 2.2 节触发器门控同源），FTS 布尔查询降级为逐 token 的子串 LIKE（AND 连接、引号短语保留整体），刻意 recall 优先——重建期临时结果胜过静默漏行，且该区间随重建推进缩为零：
+
+```python
+# hermes_state_search.py:1987
+where = ["m.id > ? AND m.id <= ?"]                 # 界限于 backfill 未覆盖的 id 区间
+params: list = [progress, high_water]              # = (fts_rebuild_progress, fts_rebuild_high_water]
+for term in terms:
+    esc = _escape_like(term)
+    where.append("(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' "
+                 "OR m.tool_calls LIKE ? ESCAPE '\\')")   # FTS 查询降级为 per-token 子串
+    params += [f"%{esc}%"] * 3
+```
 
 ### 5.4　session_search 工具：召回的呈现层
 
@@ -217,6 +407,31 @@ _ACTIVITY_WRITE_PATIENCE_S   =  0.5   ← 观测性心跳，亚秒
 _COMPRESSION_BUSY_WAIT_S     =  5.0   ← 活压缩锁（正确性边界）
 ```
 
+写锁获取与 jitter 重试的核心循环——`BEGIN IMMEDIATE` 在事务起点取写锁，`locked`/`busy` 时退出 Python 锁、jitter 睡眠后重试：
+
+```python
+# hermes_state.py:2814
+while True:
+    try:
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")   # 事务起点即取写锁
+            try:
+                result = fn(self._conn)
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return result
+    except sqlite3.OperationalError as exc:
+        if "locked" in str(exc).lower() or "busy" in str(exc).lower():
+            # 退出 Python 锁，jitter 睡眠后重试（打破确定性退避的 convoy 效应）
+            if self._sleep_before_write_retry(deadline, patience_s):
+                continue
+            raise sqlite3.OperationalError(
+                f"database is locked (held > {patience_s:.0f}s ...)")
+        raise
+```
+
 ### 8.2　读路径分离（WAL）
 
 WAL 模式下，`_get_read_conn`（`:2459`）为每线程开 `mode=ro` 只读连接（`threading.local`），召回/浏览查询**完全不取 `self._lock`**——WAL 读见一致快照、永不阻塞写也永不被写阻塞。`self._read_conns` 强引用集合让短命读线程连接不被 GC（否则泄露 tracked fd）。
@@ -224,6 +439,25 @@ WAL 模式下，`_get_read_conn`（`:2459`）为每线程开 `mode=ro` 只读连
 ### 8.3　WAL 启用与回退
 
 `apply_wal_with_fallback`（`:780`）：优先 WAL；WAL 不兼容文件系统（NFS/SMB/FUSE/ZFS）回退 DELETE 并 ERROR 去重日志；**永不活降级**已 WAL 的库。`_try_wal_checkpoint` 做 PASSIVE 检查点（每 50 次成功写），曾用 TRUNCATE 致 65K+ 页库 B-tree 损坏，故改用 PASSIVE。
+
+```python
+# hermes_state.py:849
+current_mode = _on_disk_journal_mode(conn)   # 只读探测，无 flock
+if current_mode == "wal":                     # 已是 WAL：永不活降级
+    _apply_macos_checkpoint_barrier(conn)
+    _enforce_macos_synchronous_full(conn)
+    return "wal"
+# ...
+row = conn.execute("PRAGMA journal_mode=WAL").fetchone()   # 优先 WAL
+mode = str(row[0]).strip().lower() if row and row[0] else ""
+if mode == "wal":
+    return "wal"
+# 静默拒绝（macOS NFS / SMB / AgentFS）：WAL 没生效但也没抛错
+if require_wal:
+    raise WalUnsupportedError(f"...refused without raising (still {mode!r})")
+_log_wal_fallback_once(db_label, ...)   # ERROR 去重日志，回退 DELETE
+return mode or "delete"
+```
 
 ### 8.4　FTS 维护的写锁友好
 

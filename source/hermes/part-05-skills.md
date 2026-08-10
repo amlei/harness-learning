@@ -78,6 +78,27 @@ skills/
 
 `scan_skill_commands()`（`agent/skill_commands.py:374-467`）扫描 `~/.hermes/skills/` 与 `skills.external_dirs`，对每个 `SKILL.md`：跳过 `.git/.github/.hub/.archive` 等元目录；做 OS/运行时门控；读 frontmatter 的 `name`，按"局部优先"去重；尊重 `skills.disabled` 配置；把 `name` 规范化为 hyphen slug；与核心 slash 命令去碰撞（碰撞则只禁用自动注册，仍可 `/skill <name>` 加载）。
 
+```python
+# agent/skill_commands.py:410-437（节选）
+name = frontmatter.get('name', skill_md.parent.name)
+if name in seen_names:          # 局部优先去重
+    continue
+if name in disabled:            # 尊重 skills.disabled
+    continue
+seen_names.add(name)
+# 规范化为 hyphen slug，剥掉非字母数字字符（如 +、/），
+# 否则下游会生成非法的 Telegram 命令名。
+cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
+cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+if not cmd_name:
+    continue
+# 与核心 Hermes slash 命令碰撞 → 只禁用自动注册，
+# 仍可通过 /skill <name> 显式加载。
+if resolve_command(cmd_name) is not None:
+    continue
+```
+
 `skills_list` 工具带**会话级缓存**：缓存签名 = 各扫描目录的 `max(自身 mtime, 直接子目录 mtime)` + 禁用集合 + 平台，TTL 30 秒。这个签名设计是为了用一次 `scandir` 捕捉"在分类目录里新增/删除技能"这类**不抬升根目录 mtime** 的变化。
 
 ### 3.2　技能 slash 命令的工作流
@@ -88,6 +109,27 @@ skills/
 2. `bump_use(skill_name)` 记录遥测；
 3. 构造 activation note：`[IMPORTANT: The user has invoked the "skill-name" skill ...]`；
 4. 拼接：activation note → 正文 → `[Skill directory: <abs path>]` → `[Skill config ...]` → setup note → 支撑文件清单 → 用户指令。
+
+```python
+# agent/skill_commands.py:595-613
+# 记录遥测：本次调用计入 use_count，供 Curator 生命周期判定
+try:
+    from tools.skill_usage import bump_use
+    bump_use(skill_name, task_id=task_id)
+except Exception:
+    pass  # 遥测失败不影响技能调用
+
+activation_note = (
+    f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
+    "you to follow its instructions. The full skill content is loaded below.]"
+)
+return _build_skill_message(
+    loaded_skill, skill_dir, activation_note,
+    user_instruction=user_instruction,
+    runtime_note=runtime_note,
+    session_id=task_id,
+)
+```
 
 ### 3.3　为何注入为 USER 消息而非系统提示
 
@@ -112,11 +154,48 @@ invalidate_cache = "--now" in args
 
 `/skill-a /skill-b do XYZ` 会加载最多 5 个前导技能（`_MAX_STACKED_SKILLS = 5`，`skill_commands.py:630`）。堆叠消息刻意复用 bundle 脚手架标记，使 `extract_user_instruction_from_skill_message()` 无需新标记即可工作——该函数从脚手架标记中只回收用户真实指令，避免记忆 provider 把整段技能正文误存。
 
+```python
+# agent/skill_commands.py:47-55（脚手架标记 —— 构建器与回收器共享的字节契约，
+# 必须与 _build_skill_message / build_bundle_invocation_message 逐字节一致）
+_SKILL_INVOCATION_PREFIX = "[IMPORTANT: The user has invoked the "
+_SINGLE_SKILL_MARKER = "The full skill content is loaded below.]"
+_SINGLE_SKILL_INSTRUCTION = (
+    "The user has provided the following instruction alongside the skill invocation: "
+)
+_RUNTIME_NOTE = "\n\n[Runtime note:"
+_BUNDLE_MARKER = " skill bundle,"
+_BUNDLE_USER_INSTRUCTION = "\nUser instruction: "
+_BUNDLE_FIRST_SKILL_BLOCK = "\n\n[Loaded as part of the "
+```
+
 ---
 
 ## 第 4 章　skill_manage 工具与写守卫
 
 `skill_manage` 工具（`skill_manager_tool.py:1763`，toolset=`skills`）提供六个 action：`create` / `edit` / `patch` / `delete` / `write_file` / `remove_file`。
+
+```python
+# tools/skill_manager_tool.py:1763-1781
+registry.register(
+    name="skill_manage",
+    toolset="skills",
+    schema=SKILL_MANAGE_SCHEMA,
+    handler=lambda args, **kw: skill_manage(
+        action=args.get("action", ""),
+        name=args.get("name", ""),
+        content=args.get("content"),
+        category=args.get("category"),
+        file_path=args.get("file_path"),
+        file_content=args.get("file_content"),
+        old_string=args.get("old_string"),
+        new_string=args.get("new_string"),
+        replace_all=args.get("replace_all", False),
+        absorbed_into=args.get("absorbed_into"),  # 声明 delete 意图
+        task_id=kw.get("task_id"),
+        session_id=kw.get("session_id")),
+    emoji="📝",
+)
+```
 
 - **create**：校验 → 碰撞检测 → `atomic_write_text(SKILL.md)` → 安全扫描（可选回滚）。
 - **patch**：定向 find-and-replace，复用 `fuzzy_match.fuzzy_find_and_replace` 容忍空白/缩进差异。
@@ -128,11 +207,43 @@ invalidate_cache = "--now" in args
 `skill_manage` 串了一长串守卫，这是系统最精巧的部分：
 
 - **skills 写审批门**（`_apply_skill_write_gate`）：可 stage 待审批。
-- **background-review 写守卫**（`_background_review_write_guard`）：自治 curator fork 的写面被严格收窄——拒绝写 external/bundled/hub-installed/protected-builtin/pinned 技能。
+- **background-review 写守卫**（`_background_review_write_guard`）：自治 curator fork 的写面被严格收窄——拒绝写 external/bundled/hub-installed/protected-builtin/pinned 技能，以及第 6 道：**非 curator-managed 的用户技能**。
+
+```python
+# tools/skill_manager_tool.py:387-397（第 6 道收窄的 #67140 不变量 ——
+# 缺记录与 created_by=null 必须同构失败，否则"允许恰好一次"是自相残杀）
+# A MISSING record and an explicit `created_by: null` must resolve
+# IDENTICALLY (issue #67140). Keying on `isinstance(usage_rec, dict)`
+# made the policy depend on the guard's own side effect: a local skill
+# with no telemetry record passed, the successful write called
+# bump_patch() which created a `created_by: null` record, and the very
+# same write was refused from then on. "Allowed exactly once" is not a
+# policy — it is a race with our own bookkeeping. Fail closed for both
+# shapes; `hermes curator adopt <name>` is the supported way in.
+usage_data = skill_usage.load_usage()
+usage_rec = usage_data.get(name)
+if not skill_usage._is_curator_managed_record(usage_rec):
+```
 - **read-before-write 守卫**：要求 fork 在改写前必须先用 `skill_view` 读过该确切文件，禁止凭推断改内容。
 - **curator 合并 delete 守卫**：#29912 后的 fail-closed——curator 的 LLM 合并 pass 里，无 `absorbed_into` 的裸 delete 一律拒绝。
 - **pinned 守卫**：pinned 技能禁删（但可 patch/edit）。
 - **org-mirror 写守卫**：org 共享技能可就地编辑（学习闭环的关键），但不可删除。
+
+与 provenance 守卫正交的是 `_validate_delete_target`——`rmtree` 前最后一道闸，专防被污染的 skills 树让递归删除越出根目录（对应 Kilo Code #11227 那类"内置技能哨兵解析到 cwd、递归删 wipes 整个工作目录"的事故）：
+
+```python
+# tools/skill_manager_tool.py:221-231（_validate_delete_target 的三道拒绝条件）
+This is the matching defense-in-depth for our agent-facing ``skill_manage`` delete
+path: even if discovery or a poisoned tree hands us a bad directory, never
+recursively delete
+
+  1. a path that is not strictly *inside* one of the known skills roots,
+  2. a skills root itself (would wipe every installed skill), or
+  3. a directory reached via a symlink / junction (``rmtree`` would follow
+     it into content outside the skills tree).
+
+Returns an error string to refuse on, or ``None`` when the delete is safe.
+```
 
 成功写入后做三件副作用：(1) 失效系统提示缓存；(2) 遥测（create→`record_created`、patch→`bump_patch`）；(3) 去抖动 sync 推送。
 
@@ -167,6 +278,25 @@ dangerous + community/trusted 不可被 `--force` 覆盖。
 
 `do_install`：解析源 → fetch bundle → 落 quarantine → `scan_skill` → `should_allow_install` 决策 → 写入 `~/.hermes/skills/<category>/<name>/` → 在 `.hub/lock.json` 登记 provenance。`_resolve_lock_install_path` 对 install_path 做了三层防御（逐组件查 symlink/junction、resolve 后拒绝逃逸），防止被污染的 lock 条目让 `rmtree` 擦掉整树。
 
+```python
+# tools/skills_hub.py:278-291（三层防御：逐组件查 redirect → resolve 后
+# 既拒逃逸、也拒 resolved==skills_root 自身，后者防空 install_path 擦整树）
+normalized = _normalize_lock_install_path(install_path, skill_name)
+skills_dir = _skills_dir()
+skills_root = skills_dir.resolve()
+
+target = skills_dir
+for part in normalized.split("/"):
+    target = target / part
+    if _is_path_redirect(target):
+        raise ValueError(f"Unsafe install path: {install_path}")
+
+target = target.resolve()
+if target == skills_root or not target.is_relative_to(skills_root):
+    raise ValueError(f"Unsafe install path: {install_path}")
+return target
+```
+
 ### 6.3　Sync 机制
 
 `tools/skills_sync.py` 是 bundled skills 的种子/更新层。更新逻辑：bundled 仍等于 origin_hash→跳过；bundled 变且用户副本等于 origin→安全更新；bundled 变且用户副本不同→**视为用户定制、永远跳过**。`reset_bundled_skill` 打破"用户改过→永久跳过"的死循环。
@@ -178,6 +308,26 @@ dangerous + community/trusted 不可被 `--force` 覆盖。
 `tools/skill_usage.py` 把运维遥测放在**旁车文件**而非 frontmatter，避免对 bundled/hub 技能造成冲突压力。文件位于 `~/.hermes/skills/.usage.json`，按技能名索引；原子写（tempfile + `os.replace`）；跨进程锁（`fcntl`/`msvcrt`）。所有计数 bump 都是 best-effort，失败只 DEBUG 记录。
 
 记录字段：`created_by`（None/"agent"/"installed"）、`use_count`、`view_count`、`patch_count`、`last_used_at`、`state`（active/stale/archived）、`pinned`、`archived_at`。
+
+```python
+# tools/skill_usage.py:644-659
+def _empty_record() -> Dict[str, Any]:
+    return {
+        "created_by": None,          # None / "agent" / "installed"
+        "use_count": 0,
+        "view_count": 0,
+        "last_used_at": None,
+        "last_viewed_at": None,
+        "patch_count": 0,
+        "patch_generation": 0,
+        "last_reused_patch_generation": 0,
+        "last_patched_at": None,
+        "created_at": _now_iso(),
+        "state": STATE_ACTIVE,        # active / stale / archived
+        "pinned": False,
+        "archived_at": None,
+    }
+```
 
 关键派生量 `latest_activity_at` 取 use/view/patch 之最大值，**故意排除 created_at**，以便区分"从未活动的技能"。
 
@@ -209,6 +359,29 @@ DEFAULT_CONSOLIDATE       = False    # LLM 合并 pass 默认关
 
 `apply_automatic_transitions` 遍历每个 curator-managed 技能：pinned 跳过；cron 引用的技能跳过（调度器只在 job 真触发时才 bump usage）；计算 `anchor = last_activity 或 created_at 或 now`；**never-used 优雅地板**：`use_count==0` 且年轻于 stale 窗口→完全不动（"use=0 是证据缺失，不是过时证据"）。
 
+```python
+# agent/curator.py:357-382
+current = row.get("state", _u.STATE_ACTIVE)
+# never-used 优雅地板：use_count==0 且年轻于 stale 窗口 → 不动
+never_used = int(row.get("use_count", 0) or 0) == 0
+if never_used and anchor > stale_cutoff:
+    if current == _u.STATE_STALE:
+        _u.set_state(name, _u.STATE_ACTIVE)
+        counts["reactivated"] += 1
+    continue
+
+if anchor <= archive_cutoff and current != _u.STATE_ARCHIVED:
+    ok, _msg = _u.archive_skill(name)        # 90d 未活动 → archived
+    if ok:
+        counts["archived"] += 1
+elif anchor <= stale_cutoff and current == _u.STATE_ACTIVE:
+    _u.set_state(name, _u.STATE_STALE)       # 30d 未活动 → stale
+    counts["marked_stale"] += 1
+elif anchor > stale_cutoff and current == _u.STATE_STALE:
+    _u.set_state(name, _u.STATE_ACTIVE)      # 再次使用 → reactivate
+    counts["reactivated"] += 1
+```
+
 ```mermaid
 stateDiagram-v2
     [*] --> active : skill_manage(create) [background_review]
@@ -236,15 +409,66 @@ LLM pass 在 `_run_llm_review` 里 fork `AIAgent`，关键参数：`enabled_tool
 
 硬规则：不碰 bundled/hub/external；**永不删除，只归档**；跳过 pinned；保护内置；cron 引用的技能不可裁但可并入伞形；不用 use_count 当跳过/裁剪理由。三种合并手法：(a) 并入既有伞形；(b) 建新伞形 + 归档兄弟；(c) 降级为支撑文件。**包完整性**要求：源技能若有 support 文件或相对链接，必须整体迁移或整体归档，绝不留死链。
 
+```python
+# agent/curator.py:417-432
+CURATOR_REVIEW_PROMPT = (
+    "You are running as Hermes' background skill CURATOR. This is an "
+    "UMBRELLA-BUILDING consolidation pass, not a passive audit and not a "
+    "duplicate-finder.\n\n"
+    "The goal of the skill collection is a LIBRARY OF CLASS-LEVEL "
+    "INSTRUCTIONS AND EXPERIENTIAL KNOWLEDGE. A collection of hundreds of "
+    "narrow skills where each one captures one session's specific bug is "
+    "a FAILURE of the library — not a feature. ... One broad umbrella "
+    "skill with labeled subsections beats five narrow siblings for "
+    "discoverability, not the other way around.\n\n"
+)
+```
+
 ### 8.6　curator_backup：tar.gz 快照与回滚
 
 `agent/curator_backup.py` 预运行 tar.gz 快照存于 `~/.hermes/skills/.curator_backups/<UTC-ISO>/`。`rollback` 策略：先对当前树拍安全快照（使回滚自身可撤销）；解压快照（Python 3.12+ 用 `filter="data"`，显式拒绝对路径与 `..`）；失败则还原。
+
+```python
+# agent/curator_backup.py:605-617（rollback 第 2 步 —— 安全快照必须先于一切改动，
+# 且 protect_ids 把目标快照从 prune 中豁免，否则 steady-state 下它会被剪掉）
+# Step 2: safety snapshot of current state FIRST. If this fails we bail
+# out before touching anything — otherwise a failed extract could leave
+# the user with no skills.
+try:
+    # Protect the target from this snapshot's prune step: at the steady
+    # keep limit, pruning the oldest snapshot would otherwise delete the
+    # very snapshot we are about to extract from.
+    snapshot_skills(
+        reason=f"pre-rollback to {target.name}",
+        protect_ids={target.name},
+    )
+except Exception as e:
+    return (False, f"pre-rollback safety snapshot failed: {e}", None)
+```
 
 ---
 
 ## 第 9 章　skills_guard / skills_ast_audit：验证与审计
 
 `tools/skills_guard.py` 是进程内正则静态扫描器，SECURITY.md 把它定位为"useful — not boundaries"（提示，而非边界）。`THREAT_PATTERNS` 覆盖 exfiltration、prompt injection、destructive、persistence、network、obfuscation、supply chain、crypto mining、硬编码密钥、不可见 Unicode。结构检查：文件数 ≤50、总大小 ≤1MB、可疑二进制扩展名、symlink 逃逸。裁定：有 critical→dangerous、有 high→caution、仅 medium/low→safe。
+
+```python
+# tools/skills_guard.py:101-107（THREAT_PATTERNS —— 五元组）
+THREAT_PATTERNS = [
+    # (regex, pattern_id, severity, category, description)
+    (r'curl\s+[^\n]*\$\{?\w*(KEY|TOKEN|SECRET|PASSWORD|CREDENTIAL|API)',
+     "env_exfil_curl", "critical", "exfiltration",
+     "curl command interpolating secret environment variable"),
+    # ...覆盖 exfiltration / injection / destructive / persistence / network /
+    #     obfuscation / supply_chain / mining / credential_exposure 约 80 条
+]
+
+# tools/skills_guard.py:526-529（编译一次，scan_file 逐行扫描）
+_COMPILED_THREAT_PATTERNS = [
+    (re.compile(pattern, re.IGNORECASE), pid, severity, category, description)
+    for pattern, pid, severity, category, description in THREAT_PATTERNS
+]
+```
 
 `tools/skills_ast_audit.py` 是选开的 AST 深度审计（`hermes skills audit --deep`），扫描 `importlib.import_module`、`__import__(<computed>)` 等动态导入，供人工复审第三方技能代码。
 

@@ -42,7 +42,7 @@ The full engine is ~200 lines in `reader/reader.js` — read it before changing 
 Pure CSS, no JS theme switching, no FOUC. Each theme is defined once in `reader/reader.css` as `:root[data-theme="…"]` and chosen per page via `<html data-theme="…">`. Existing themes: `atelier` (directory/house), `hermes`, `periodical` (papers), `technical` (systems/Go repos).
 
 - To **add a theme**: add a `:root[data-theme="x"]{…}` block to `reader/reader.css` **and** add matching preview fields (`accent` / `mark` / `display` / `character`) under `THEMES` in `catalog.js` (the directory cards read those).
-- A theme's real colors must be **measured from the upstream repo's own site** (computed styles via headless browser, cross-checked with a vision model), not guessed. See the Gotchas in `skill/study-notes/SKILL.md` — this repo once shipped a wrong theme from a misread Next.js site.
+- A theme's real colors must be **measured from the upstream repo's own site** (computed styles via headless browser, cross-checked with a vision model), not guessed. See the Gotchas in `skill/pro-to-book/SKILL.md` — this repo once shipped a wrong theme from a misread Next.js site.
 - Mermaid palette is read from CSS vars at runtime and picks light/dark by canvas luminance; don't hardcode darks — light themes will expose them.
 
 ## Commands
@@ -81,4 +81,4 @@ Adding a paper is analogous: copy `paper/_template.html` → `paper/<slug>/index
 
 ## Producing a new volume end-to-end
 
-The full methodology (recon → parallel opus deep-dive → synthesis → site) is fixed in the **`study-notes` skill** at `skill/study-notes/SKILL.md` (also reachable as `.claude/skills/study-notes` via a symlink, and invokable with `/study-notes`). For any task that means creating or heavily revising a source monograph, read that skill first — it is the authoritative process and supersedes the shorthand in the README.
+The full methodology (recon → parallel opus deep-dive → synthesis → site) is fixed in the **`pro-to-book` skill** at `skill/pro-to-book/SKILL.md` (also reachable as `.claude/skills/pro-to-book` via a symlink, and invokable with `/pro-to-book`). For any task that means creating or heavily revising a source monograph, read that skill first — it is the authoritative process and supersedes the shorthand in the README.

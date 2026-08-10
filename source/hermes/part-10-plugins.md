@@ -71,7 +71,43 @@ flowchart TD
 
 `PluginManifest` dataclass 字段含 `name`/`version`/`kind`/`source`/`path`/`key`。`kind` 是核心路由字段，取值 `standalone`/`backend`/`exclusive`/`platform`/`model-provider`。
 
+```python
+# hermes_cli/plugins.py:284
+@dataclass
+class PluginManifest:
+    """Parsed representation of a plugin.yaml manifest."""
+    name: str
+    version: str = ""
+    source: str = ""        # "user"/"project"/"bundled"/"entrypoint"
+    path: Optional[str] = None
+    # kind 是核心路由字段:standalone/backend/exclusive/platform/model-provider
+    kind: str = "standalone"
+    # path-derived key,用于 plugins.enabled/disabled 查询与 hermes plugins list
+    key: str = ""
+```
+
 当用户安装的插件**没有显式写 `kind:`** 时，`_parse_manifest` 读 `__init__.py` 前 8192 字节做文本嗅探：含 `register_memory_provider`/`MemoryProvider` → `exclusive`；含 `register_provider`/`ProviderProfile` → `model-provider`。这是为了避免用户安装的 memory/model provider 被通用 PluginManager 加载（`PluginContext` 上并没有 `register_memory_provider` 方法，会出错），而是把它们路由到各自专门的发现系统。
+
+```python
+# hermes_cli/plugins.py:1622
+if kind == "standalone" and "kind" not in data:
+    init_file = plugin_dir / "__init__.py"
+    if init_file.exists():
+        try:
+            source_text = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
+            if (
+                "register_memory_provider" in source_text
+                or "MemoryProvider" in source_text
+            ):
+                kind = "exclusive"          # 路由到 plugins/memory 发现
+            elif (
+                "register_provider" in source_text
+                and "ProviderProfile" in source_text
+            ):
+                kind = "model-provider"     # 路由到 providers/__init__ 发现
+        except Exception:
+            pass
+```
 
 ### 3.3　加载决策
 
@@ -87,6 +123,24 @@ flowchart TD
 ### 3.4　_load_plugin 与 register(ctx)
 
 `_load_plugin` 做四件事：调 `registry.register_plugin_override_policy(...)` 预注册 tool-override 权限策略；导入模块；取 `register` 函数，构造 `PluginContext(manifest, self)` 并调用；通过"快照前/后状态差分"精确归属该插件注册了多少 tool/hook/middleware/command。
+
+差分的关键是非对称的：**tool 用名字集合差，hook/middleware 用回调计数差**。hook 名可被多插件共用（都注册 `pre_tool_call`），早期按名字 diff 的实现会把共用名只归给首个插件、后续插件 under-report；改按每个 hook 的回调条目数前后差，才能正确归属"本插件新增的那一条回调"。
+
+```python
+# hermes_cli/plugins.py:1807
+_tools_before = set(self._plugin_tool_names)
+_hook_counts_before = {h: len(cbs) for h, cbs in self._hooks.items()}
+_mw_counts_before = {kind: len(cbs) for kind, cbs in self._middleware.items()}
+register_fn(ctx)
+loaded.tools_registered = [t for t in self._plugin_tool_names if t not in _tools_before]
+loaded.hooks_registered = [
+    h for h, cbs in self._hooks.items() if len(cbs) > _hook_counts_before.get(h, 0)
+]
+loaded.middleware_registered = [
+    kind for kind, cbs in self._middleware.items()
+    if len(cbs) > _mw_counts_before.get(kind, 0)
+]
+```
 
 ### 3.5　发现的幂等性与失败语义
 
@@ -150,6 +204,33 @@ return bool(entries.get(plugin_id, {}).get("allow_tool_override", False))
 
 `PluginManager.invoke_hook` 逐个回调包 try/except——"a misbehaving plugin cannot break the core agent loop"。
 
+```python
+# hermes_cli/plugins.py:1180
+def register_hook(self, hook_name: str, callback: Callable) -> None:
+    """未知 hook 名告警但仍存,前向兼容。"""
+    if hook_name not in VALID_HOOKS:
+        logger.warning(
+            "Plugin '%s' registered unknown hook '%s'",
+            self.manifest.name, hook_name,
+        )
+    self._manager._hooks.setdefault(hook_name, []).append(callback)
+```
+
+```python
+# hermes_cli/plugins.py:1935
+callbacks = self._hooks.get(hook_name, [])
+results: List[Any] = []
+for cb in callbacks:
+    try:
+        ret = cb(**kwargs)
+        if ret is not None:
+            results.append(ret)
+    except Exception as exc:        # 单回调异常被吞,不破坏 agent 主循环
+        logger.warning("Hook '%s' callback %s raised: %s",
+                       hook_name, getattr(cb, "__name__", repr(cb)), exc)
+return results
+```
+
 ### 4.5　pre_tool_call 的 block/approve 指令解析
 
 `_get_pre_tool_call_directive_details` 把 hook 返回值规约为 `_PreToolCallDirective`：
@@ -181,6 +262,26 @@ return bool(entries.get(plugin_id, {}).get("allow_tool_override", False))
 - **模型目录**：`fallback_models`（live fetch 失败时 picker 用的精选列表）；
 - **可覆写 hooks**：`prepare_messages()`、`build_extra_body()`、`build_api_kwargs_extras()`（返回 `(extra_body_additions, top_level_kwargs)`——因 reasoning config 有的 provider 放 extra_body 如 OpenRouter，有的放顶层如 Kimi）、`fetch_models()`。
 
+```python
+# providers/base.py:38
+@dataclass
+class ProviderProfile:
+    """Base provider profile — declarative;不负责 client 构造/凭证/流式。"""
+    # ── Identity ──
+    name: str
+    api_mode: str = "chat_completions"   # 或 "anthropic_messages"
+    aliases: tuple = ()
+    # ── Auth & endpoints ──
+    env_vars: tuple = ()
+    base_url: str = ""
+    auth_type: str = "api_key"           # api_key|oauth_device_code|oauth_external|copilot|aws_sdk
+    # ── Vision ──
+    supports_vision: bool = False
+    supports_vision_tool_messages: bool = True   # Xiaomi MiMo 类拒收 list 型 tool content 时设 False
+    # ── Model catalog ──
+    fallback_models: tuple = ()          # live fetch 失败时 picker 用的精选列表
+```
+
 ### 5.2　独立的懒发现
 
 `providers/__init__.py` 维护三个模块级状态：`_REGISTRY`、`_ALIASES`、`_discovered`。`get_provider_profile(name)` 和 `list_providers()` 在首次调用时触发 `_discover_providers()`。扫描顺序：bundled → user → legacy。`register_provider` 后注册者覆盖前者：
@@ -192,6 +293,31 @@ for alias in profile.aliases:
 ```
 
 所以 user plugin 同名能覆盖 bundled——第三方可不改 repo 就替换任意内置 profile。
+
+```python
+# providers/__init__.py:163
+# 1. Bundled:<repo>/plugins/model-providers/<name>/
+if _BUNDLED_PLUGINS_DIR.is_dir():
+    for child in sorted(_BUNDLED_PLUGINS_DIR.iterdir()):
+        if child.is_dir() and not child.name.startswith(("_", ".")):
+            _import_plugin_dir(child, "bundled")
+# 2. User:$HERMES_HOME/plugins/model-providers/<name>/  (同名覆盖 bundled)
+user_dir = _user_plugins_dir()
+if user_dir is not None:
+    for child in sorted(user_dir.iterdir()):
+        if child.is_dir() and not child.name.startswith(("_", ".")):
+            _import_plugin_dir(child, "user")
+# 3. Legacy:providers/<name>.py 单文件,经 pkgutil.iter_modules 兜底(向后兼容)
+try:
+    import pkgutil
+    import providers as _pkg
+    for _importer, modname, _ispkg in pkgutil.iter_modules(_pkg.__path__):
+        if modname.startswith("_") or modname == "base":
+            continue
+        importlib.import_module(f"providers.{modname}")   # 跳过 _ 前缀与 base
+except Exception:
+    pass
+```
 
 ### 5.3　三种 ProviderProfile 写法范式
 
@@ -210,6 +336,29 @@ for alias in profile.aliases:
 可选 hook 丰富：`on_turn_start`、`on_session_end`、`on_session_switch`（处理 `/resume`/`/branch`/`/reset`/压缩的 session_id 轮换）、`on_pre_compress`（返回文本进压缩 summary prompt）、`on_delegation`、`on_memory_write`（镜像内置 memory 工具写入）、`backup_paths()`。
 
 `MemoryManager` 强制 **one-external-provider limit**——防止 tool schema 膨胀与 memory 后端冲突。
+
+```python
+# agent/memory_provider.py:81
+class MemoryProvider(ABC):
+    """Abstract base class for memory providers."""
+
+    @property
+    @abstractmethod
+    def name(self) -> str:
+        """短标识:'builtin'/'honcho'/'hindsight'…"""
+
+    @abstractmethod
+    def is_available(self) -> bool:
+        """凭证/依赖就绪才返回 True(不发网络请求)。"""
+
+    @abstractmethod
+    def initialize(self, session_id: str, **kwargs) -> None:
+        """Agent 启动调用一次;kwargs 必含 hermes_home 与 platform。"""
+
+    @abstractmethod
+    def get_tool_schemas(self) -> List[Dict[str, Any]]:
+        """本 provider 暴露的工具 schema(OpenAI function 格式)。"""
+```
 
 ### 6.2　独立发现：bundled 优先（与 model-provider 相反）
 

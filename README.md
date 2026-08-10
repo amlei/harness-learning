@@ -22,11 +22,11 @@ harness-learning/
 │       └── part-*.md
 ├── paper/
 │   └── _template.html      # 新增文章时复制此模板
-├── skill/study-notes/      # study-notes 技能：把任意仓库源码深挖成书的完整方法论（SKILL.md + references）
-└── .claude/skills/study-notes → ../../skill/study-notes   # 软链，供 Claude Code 自动发现
+├── skill/pro-to-book/      # pro-to-book 技能：把任意仓库（project）读穿成书的完整方法论（SKILL.md + references）
+└── .claude/skills/pro-to-book → ../../skill/pro-to-book   # 软链，供 Claude Code 自动发现
 ```
 
-> 🛠️ **完整方法论已固化为 [`skill/study-notes`](./skill/study-notes/SKILL.md) 技能**——用 `/study-notes` 给任意新仓库产出本书式的源码剖析（深挖→成篇→阅读站点，含主题核验、反知识诅咒、交叉引用等全部规则）。
+> 🛠️ **完整方法论已固化为 [`skill/pro-to-book`](./skill/pro-to-book/SKILL.md) 技能**——用 `/pro-to-book` 给任意新仓库产出本书式的源码剖析（深挖→成篇→阅读站点，含主题核验、反知识诅咒、交叉引用等全部规则）。
 
 **核心约定**：
 

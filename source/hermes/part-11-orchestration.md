@@ -46,6 +46,23 @@
 
 - **角色解析**：`child_depth = parent_depth + 1`；`orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn`；`effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"`。即角色降级只在此时发生：kill switch 关闭或深度触底，都强制降为 `leaf`。
 - **toolset 收窄**：子代理 toolset 取父启用 toolset 与（可选）请求 toolset 的交集，经 `_strip_blocked_tools` 剥离。`leaf` 角色的 `disabled_toolsets = inherited + _blocked_toolsets_for_role("leaf") + ["kanban"]`；`orchestrator` 则把 `delegation` toolset **无条件重新加回**——嵌套能力由角色授予，而非继承。
+
+```python
+# tools/delegate_tool.py:1409
+    if effective_role == "orchestrator":
+        # 角色授予 delegate_task，匹配下方 delegation toolset 的无条件重新加回
+        inherited_disabled = [n for n in inherited_disabled if n != "delegation"]
+    child_disabled_toolsets = list(
+        dict.fromkeys(
+            inherited_disabled + _blocked_toolsets_for_role(effective_role) + ["kanban"]
+        )
+    )
+    # orchestrator 把 _strip_blocked_tools 移除的 delegation toolset 无条件加回
+    # —— 嵌套能力由角色授予，而非继承
+    if effective_role == "orchestrator" and "delegation" not in child_toolsets:
+        child_toolsets.append("delegation")
+```
+
 - **AIAgent 构造**：以 `quiet_mode=True`、`skip_context_files=True`、`skip_memory=True`、`platform="subagent"`、`ephemeral_system_prompt=child_prompt`、`iteration_budget=None`（每子代理全新预算）等构造。
 
 **`_last_resolved_tool_names` 保存/恢复——及其必要性**：
@@ -72,11 +89,62 @@ return _delegate_task(..., background=(not _is_subagent), parent_agent=self)
 
 顶层模型委派**总是后台**（模型无权阻塞自己的回合）；只有 orchestrator 子代理才同步——因为它必须在自己的回合内合成 worker 摘要，且不拥有异步结果要路由回去的网关会话。
 
+**`_run_single_child` 的心跳线程（同步路径的活跃度桥）**：orchestrator 子代理同步执行期间，父的 `_last_activity_ts` 会冻结——网关看门狗会判定父"无活动"并杀掉整个 agent。`_run_single_child` 为每个子起一个 daemon 心跳线程，双职责：(1) 每 30s 调 `parent_agent._touch_activity()` 把"子仍在工作"传播给父；(2) 陈旧检测——若子的 `(api_call_count, current_tool, last_activity_ts)` 三元组在连续 N 个心跳周期内全无前进，则计数为 stale。阈值分两档：空闲（未在工具内）15 周期=450s，在工具内 40 周期=1200s（合法慢工具给足时间，真正卡死的子很快触及空闲阈值）。一旦判定 stale，线程**停止 touch 父**——故意让网关非活动超时触发，由网关统一收割，而非子自己猜一个墙钟上限。
+
+```python
+# tools/delegate_tool.py:837
+_HEARTBEAT_INTERVAL = 30
+_HEARTBEAT_STALE_CYCLES_IDLE = 15        # 15 * 30s = 450s 空闲 → stale
+_HEARTBEAT_STALE_CYCLES_IN_TOOL = 40     # 40 * 30s = 1200s 卡同一工具 → stale
+# tools/delegate_tool.py:2152 —— 三元组任一前进即清零,否则累计
+if iter_advanced or tool_changed or activity_advanced:
+    _stale_count[0] = 0
+else:
+    _stale_count[0] += 1
+stale_limit = (_HEARTBEAT_STALE_CYCLES_IN_TOOL if child_tool
+               else _HEARTBEAT_STALE_CYCLES_IDLE)
+if _stale_count[0] >= stale_limit:
+    break   # 停止 touch 父,让网关超时触发
+```
+
+注：这组阈值与下方 2.3 异步路径的 stall monitor 数值相同（450s/1200s），但机制不同——同步路径是**每子一个心跳线程**（只有 orchestrator 子走此路），异步路径是**单 daemon 监视线程**扫所有记录。
+
 ### 2.3　异步委派（tools/async_delegation.py）
 
 `background=true` 经 `dispatch_async_delegation_batch` 派发到**模块级常驻 daemon 执行器**，立即返回 `{"status":"dispatched","delegation_id":...}`。
 
+```python
+# tools/async_delegation.py:998
+    with _records_lock:
+        running = sum(1 for r in _records.values()
+                      if r.get("status") in ("running", "stalling"))
+        if running >= max_async_children:           # 容量满即 rejected，不排队
+            return {"status": "rejected",
+                    "error": f"Async delegation capacity reached ({max_async_children} running)..."}
+        _records[delegation_id] = record             # 容量检查与记录插入在同一锁内
+    _persist_dispatch(record)                         # 仅持久化投递账本，非计算本身
+    executor = _get_executor(max_async_children)      # 模块级常驻 daemon 执行器
+    # ... worker 构造省略 ...
+    executor.submit(propagate_context_to_thread(_worker))  # daemon 线程；立即返回
+    return {"status": "dispatched", "delegation_id": delegation_id}
+```
+
 **结果回注**：子完成时把 `type="async_delegation"` 事件 push 到共享的 `process_registry.completion_queue`。CLI 的 `process_loop` 与网关的 `_run_process_watcher` 已在 agent 空闲时轮询该队列，把每个事件锻造为**新一轮** turn——硬不变式：永不改动历史上下文，保 prompt 缓存与消息轮替合法。
+
+不变式靠的是回注路径：drain 出的事件被格式化成合成消息，**放进与真实用户输入同一个 `_pending_input` 队列**，由 `process_loop` 当作下一轮的 user 消息消费——因此它出现在新 turn 的起点，而非被拼接进已有历史。`async_delegation` 事件还需通过"正向证明"归属校验（`owns_event` 回调或 `session_key` 相等），校验失败的事件被重新入队留给真正属主，fail-closed 不泄露给错误会话。
+
+```python
+# cli.py:10692
+for event, synthetic_message in process_registry.drain_notifications(
+    session_key=session_key,
+    owns_event=self._owns_process_notification,   # 正向证明归属
+):
+    claim = claim_event_delivery(event, consumer)
+    if claim is None:
+        continue
+    self._pending_input.put(synthetic_message)    # → 下一轮 user 消息,非历史拼接
+    complete_event_delivery(event, claim)
+```
 
 **容量与拒绝**：达到 `max_async_children` 即 `rejected`（**不排队**），防止失控模型堆积无界后台工作；调用方回退同步执行。
 
@@ -130,7 +198,48 @@ flowchart TD
 
 **`tick()`**——文件锁 `~/.hermes/cron/.tick.lock` 非阻塞获取（失败则 return 0）。锁内：`get_due_jobs()` → 无作业则空 tick 快速返回（仍做 MCP 孤儿清理）→ `advance_next_runs` 批量预先推进 → **分池**：`workdir` 作业进单线程 sequential 池（避免 `os.environ["TERMINAL_CWD"]` 竞争），无 workdir 进 parallel 池 → `_submit_with_guard` fire-and-forget 派发。
 
+```python
+# cron/scheduler.py:4181
+    lock_fd = open(lock_file, "w", encoding="utf-8")
+    try:
+        if fcntl:
+            fcntl.flock(lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)   # 非阻塞跨进程锁
+        elif msvcrt:
+            msvcrt.locking(lock_fd.fileno(), msvcrt.LK_NBLCK, 1)
+    except (OSError, IOError):
+        return 0                                                    # 另一 tick 持锁，本轮让出
+    # ... can_dispatch 门控 ...
+    due_jobs = get_due_jobs()
+    if not due_jobs:
+        return 0                                  # 空 tick：仍做 MCP 孤儿清理
+    advance_next_runs([job["id"] for job in due_jobs])   # 批量预先推进 → at-most-once
+    # 分池：workdir 作业会改 os.environ["TERMINAL_CWD"]（进程全局），须串行
+    sequential_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
+    parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+```
+
 **`_ReadWriteLock`**：写优先读写锁，守护进程级 `TERMINAL_CWD` 覆盖；workdir 作业是写者（独占），无 workdir 作业是读者（并发），故无 workdir 作业绝不会被另一作业的 workdir 污染。
+
+"写优先"由 `_writers_waiting` 计数器实现：读者在 `acquire_read` 里不仅等当前写者释放，还等**任何已排队的写者**（`_writers_waiting > 0` 时也阻塞）——这保证一串无 workdir 的读者作业不会饿死 sequential 池里排队的 workdir 写者。
+
+```python
+# cron/scheduler.py:463
+def acquire_read(self) -> None:
+    with self._cond:
+        while self._writer_active or self._writers_waiting > 0:
+            self._cond.wait()              # 有写者排队就先让,写优先
+        self._readers += 1
+
+def acquire_write(self) -> None:
+    with self._cond:
+        self._writers_waiting += 1
+        try:
+            while self._writer_active or self._readers > 0:
+                self._cond.wait()
+        finally:
+            self._writers_waiting -= 1
+        self._writer_active = True
+```
 
 **run_job → 构造 cron AIAgent**：
 
@@ -186,6 +295,22 @@ if _idle_secs >= _cron_inactivity_limit:
 
 `dispatch_once` 是对 `_dispatch_once_locked` 的薄封装，先取**board 范围的单写者锁** `_dispatch_tick_lock(db_path)`——两个指向同一 `kanban.db` 的调度器绝不会并发跑 reclaim/spawn/write tick。
 
+```python
+# hermes_cli/kanban_db.py:8252
+    with _dispatch_tick_lock(db_path) as held:        # board 范围单写者锁（非阻塞）
+        if not held:
+            return DispatchResult(skipped_locked=True)  # 输家本轮让出，零写入
+        result = _dispatch_once_locked(
+            conn,
+            spawn_fn=spawn_fn,
+            ttl_seconds=ttl_seconds,
+            # ... 其余 reclaim / detect / spawn 参数 ...
+            board=board,
+        )
+        _maybe_checkpoint_wal(conn, db_path)         # 仍持锁时截断 WAL
+        return result
+```
+
 `_dispatch_once_locked` 步骤：
 
 1. `reap_worker_zombies()` 收割僵尸子进程；
@@ -195,6 +320,25 @@ if _idle_secs >= _cron_inactivity_limit:
 5. 遍历 `ready` 行，`claim_task` 原子 `ready→running` CAS，调 `spawn_fn`。
 
 **`claim_task` 的结构性不变式**：任何 parent 未 `done` 时绝不 `ready→running`——若竞争写者把未就绪任务误提升为 `ready`，在此降回 `todo`。
+
+```python
+# hermes_cli/kanban_db.py:4287
+        cur = conn.execute(
+            """
+            UPDATE tasks
+               SET status        = 'running',
+                   claim_lock    = ?,
+                   claim_expires = ?,
+                   started_at    = COALESCE(started_at, ?)
+             WHERE id = ?
+               AND status = 'ready'
+               AND claim_lock IS NULL
+            """,
+            (lock, expires, now, task_id),
+        )
+        if cur.rowcount != 1:
+            return None              # CAS 输家：0 影响行，观察后离去，无重试环
+```
 
 **`max_spawn` 是"活并发上限"而非每 tick 预算**：它把已在 `running` 的任务数加上本 tick 的 spawn 一起算。故 `max_spawn=4` 即"全板至多 4 worker 同时跑"。
 
