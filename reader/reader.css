@@ -148,6 +148,8 @@ body::after{content:"";position:fixed;inset:-50%;z-index:9998;pointer-events:non
 .topbar .sep{color:var(--mute-2)}
 .topbar .progress{margin-left:auto;width:120px;height:2px;background:var(--rule);position:relative;overflow:hidden}
 .topbar .progress i{position:absolute;inset:0;width:0;background:linear-gradient(90deg,var(--accent-deep),var(--accent));transition:width .12s linear}
+.topbar .gh-link{margin-left:14px;color:var(--bone-dim);display:inline-flex;align-items:center;line-height:0}
+.topbar .gh-link:hover{color:var(--accent)}
 
 /* ── section heading ── */
 .shead{display:flex;align-items:baseline;gap:18px;margin:0 0 38px}
