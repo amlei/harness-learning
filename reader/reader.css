@@ -66,6 +66,28 @@
   --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
 }
 
+:root[data-theme="dsh"]{
+  /* light, faithful to deepseek.com: warm off-white canvas + slate ink + brand blue (#4176E6,
+     rgb 65,118,230) accent + soft blue-grey wash, DM Sans / Host Grotesk geometric grotesques.
+     Colours measured as computed styles on the live marketing site (CSS = ground truth):
+     body #f9f8f8, surface #ffffff, ink #1e232c, accent #4176e6 (links), gradient rgb(156,193,231)
+     blue → transparent, muted #8691a1, fonts "DM Sans"/"Host Grotesk". */
+  --ink:#f9f8f8; --ink-2:#ffffff; --ink-3:#eef1f6; --ink-deep:#e7ecf3;
+  --rule:#dfe4ee; --rule-soft:#eaeef5;
+  --bone:#1e232c; --bone-dim:#3d4654; --mute:#6b7585; --mute-2:#8691a1;
+  --code-fg:#1f4ed8;             /* brand-blue inline-code on a light pill */
+  --accent:#4176e6; --accent-soft:#6993ee; --accent-deep:#2c5bc8; --accent-2:#9cc1e7;
+  --f-display:'Host Grotesk','DM Sans','Noto Sans SC',system-ui,-apple-system,sans-serif;
+  --f-body:'DM Sans','Host Grotesk','Noto Sans SC',system-ui,-apple-system,sans-serif;
+  --f-mono:'JetBrains Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+}
+:root[data-theme="dsh"]{
+  /* code island: light theme keeps a quiet light-grey block with dark text — matches the
+     site's restrained, document-station feel; syntax tokens stay readable on it. */
+  --code-bg:#f3f5f9; --code-text:#1e232c;
+  --syn-keyword:#7c3aed; --syn-string:#15803d; --syn-number:#b45309; --syn-comment:#8691a1; --syn-fn:#1d4ed8;
+}
+
 body,.spine,.vol,.brand .cad,a,.shead,.topbar,.pcard,.pitem,.part-head,.hero,.outline{transition:background-color .45s ease,border-color .45s ease,color .45s ease}
 
 /* ── code-block palettes (theme-aware; overrides CDN hljs theme) ── */

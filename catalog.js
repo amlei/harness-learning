@@ -19,6 +19,7 @@ window.CATALOG = {
     periodical: { accent:'#8290b8', mark:'§',  display:'Spectral',         character:'slate indigo · periodical serif' },
     technical:  { accent:'#c7b08a', mark:'⌘', display:'Bricolage Grotesque', character:'graphite · utilitarian grotesque' },
     eino:       { accent:'#086480', mark:'⬡', display:'Open Sans',           character:'deep teal · technical doc sans' },
+    dsh:        { accent:'#4176e6', mark:'◆', display:'DM Sans',              character:'brand blue · slate ink · clean grotesque' },
   },
 
   source: [
@@ -36,6 +37,13 @@ window.CATALOG = {
       blurb:'CloudWeGo/字节跳动的 Go LLM 应用开发框架。不讲"怎么用"，而是追问"它是如何被造出来的"——强类型流编排、Go 泛型驱动的图引擎与 Pregel 状态图、组件-编排-ADK 三层架构、ReAct 回合循环、人机协同中断与检查点、多代理委派。',
       author:'Amlei', updated:'2026-08-09',
       statsLabel:'13 篇 · ~200KB · 25+ 图',
+    },
+    {
+      id:'dsh', title:'DeepSeek Harness', theme:'dsh',
+      tagline:'A plugin-based agent harness — dissected.',
+      blurb:'DeepSeek AI 开源的插件式 agent harness（dsh），跑在 vendored Cordis 上。不讲"怎么用"，而是追问"它是如何被造出来的"——万物皆插件的可逆副作用、turn/step 双层循环、事件溯源会话与 surface 投影、monotonic 守卫工具管线、可换后端的持久化与 crash 恢复、surface replace 上下文压缩、六种子 Agent 委派 provider、landlock 沙箱与 fail-closed 审批、profile/bundle 组合启动。',
+      author:'Amlei', updated:'2026-08-13',
+      statsLabel:'16 篇 · ~270KB · 35+ 图',
     },
   ],
 

@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dsh">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>DeepSeek Harness · 源码剖析 — Harness Learning</title>
+<meta name="description" content="DeepSeek Harness 源码实现剖析：设计思想、实现机制与实现原理。" />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f9f8f8'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%234176e6'%3E%E2%97%86%3C/text%3E%3C/svg%3E" />
+
+<!-- rendering libs -->
+<script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/mermaid@10.9.1/dist/mermaid.min.js"></script>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/atom-one-dark.min.css" />
+<script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+
+<!-- shared design system + engine -->
+<link rel="stylesheet" href="../../reader/reader.css" />
+
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,700&family=Host+Grotesk:wght@400;500;600;700&display=swap" rel="stylesheet" />
+</head>
+<body>
+<div class="scrim" id="scrim"></div>
+
+<aside class="spine" id="spine">
+  <a class="brand" href="./">
+    <span class="cad">◆</span>
+    <span class="bt"><b>DeepSeek Harness</b><span>source monograph</span></span>
+  </a>
+  <a class="back-link" href="../../">← atelier</a>
+
+  <div class="div" id="volDiv"></div>
+  <p class="label" id="volLabel">This volume</p>
+  <div id="volToc"></div>
+
+  <div class="foot">
+    作者 <a href="https://github.com/amlei" target="_blank" rel="noopener">Amlei</a> · 2026-08-13<br>
+    <a href="https://github.com/deepseek-ai/deepseek-harness" target="_blank" rel="noopener">↗ upstream repo</a><br>
+    <a href="../../">← back to atelier</a>
+  </div>
+</aside>
+
+<div class="main">
+  <div class="topbar" id="topbar">
+    <button class="menu-btn" id="menuBtn">☰ index</button>
+    <a href="./"><span>◆</span> dsh</a>
+    <span class="sep" id="crumbSep" style="display:none">/</span>
+    <span id="crumb"></span>
+    <div class="progress"><i id="progBar"></i></div>
+  </div>
+  <div id="view"></div>
+</div>
+
+<!-- this project's manifest — fully self-contained -->
+<script>
+window.READER = {
+  kind: 'source',
+  home: {
+    title: 'DeepSeek Harness',
+    mark: '◆',
+    blurb: 'DeepSeek AI 开源的插件式 agent harness（dsh），跑在 vendored Cordis 上。不讲"怎么用"，而是追问"它是如何被造出来的"——万物皆插件的可逆副作用、turn/step 双层循环、事件溯源会话与 surface 投影、monotonic 守卫工具管线、可换后端的持久化与 crash 恢复、surface replace 上下文压缩、六种子 Agent 委派 provider、landlock 沙箱与 fail-closed 审批、profile/bundle 组合启动。',
+    author: 'Amlei', updated: '2026-08-13',
+    repo: 'https://github.com/deepseek-ai/deepseek-harness',
+    statsLabel: '16 篇 · ~270KB · 35+ 图',
+  },
+  parts: [
+    ['part-00-preface','00','序言与总目录','阅读地图、写作立场、概念入门、贯穿全书的六条设计主线。',['前言','目录','主线'],'~10k'],
+    ['part-01-overview','01','全景与设计哲学','项目定位、八条核心设计决策、整体架构与代码地图。',['架构','决策','依赖链'],'~11k'],
+    ['part-02-cordis','02','Cordis 插件框架','Service/context/inject、四种事件分发模式、可逆副作用与 LIFO teardown。',['plugin','waterfall','effect'],'~13k'],
+    ['part-03-agent-loop','03','Agent 循环','turn/step 双层结构、inbox 唤醒锁存、创建事务折叠进单 effect。',['turn','step','inbox'],'~14k'],
+    ['part-04-session','04','会话日志','append-only 事件溯源、surface 投影、deriveMessages 派生历史。',['event-sourcing','surface','derive'],'~14k'],
+    ['part-05-tools','05','工具系统','六阶段守卫执行管线、monotonic guard 减权、Code Mode 传输。',['pipeline','guard','code-mode'],'~15k'],
+    ['part-06-system-prompt','06','系统提示词装配','每步重读、scoped shadows global、complete section 接管。',['prompt','section','context'],'~8k'],
+    ['part-07-seams-scope','07','能力接缝与作用域','三角色 seam、scope 两方向链、Map→union、branded id。',['seam','scope','brand'],'~12k'],
+    ['part-08-persistence','08','会话持久化','flush batching 去抖、crash 恢复合成 interrupted closer、JSONL/SQLite。',['persistence','crash','batching'],'~11k'],
+    ['part-09-compaction','09','上下文压缩','锁 bracket crash 安全、surface replace、pressure/overflow 触发。',['compaction','surface','summary'],'~13k'],
+    ['part-10-subagent','10','子 Agent 委派','六种 provider、composeFrom bind 继承、delegation depth 持久化。',['subagent','delegation','provider'],'~13k'],
+    ['part-11-llm','11','LLM 适配接缝','vocabulary、adapter 注册、BlockAssembler、token-meter 重算。',['llm','adapter','stream'],'~10k'],
+    ['part-12-security','12','沙箱与审批','landlock 内核隔离、approval fail-closed、permission preset 两旋钮。',['sandbox','approval','landlock'],'~11k'],
+    ['part-13-boot','13','组合与启动','profile/bundle/patch 叠加、agent-presets standing mount、composeFrom。',['profile','bundle','preset'],'~11k'],
+    ['part-14-ecosystem','14','扩展生态（上）','Typert 类型图/RPC 网关、workflow worker-thread、session-projection 冷读阶梯、attachment 内容寻址、storage per-domain 路由。',['typert','workflow','projection'],'~24k'],
+    ['part-15-ecosystem','15','扩展生态（下）','hooks 兼容桥、skill catalog、jobs 后台任务、goal 持久目标、spill 溢出、session-query FTS5、plan 计划模式、todo 任务列表。',['hooks','jobs','goal','spill'],'~24k'],
+  ],
+};
+</script>
+<script src="../../reader/reader.js"></script>
+</body>
+</html>
