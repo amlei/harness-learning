@@ -239,6 +239,40 @@
 
   marked.use({gfm:true,breaks:false});
 
+  /* ── dark/light scheme toggle (overlays any data-theme) ── */
+  const SUN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M4.3 4.3l1.7 1.7M18 18l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.3 19.7 6 18M18 6l1.7-1.7"/></svg>';
+  const MOON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 14.2A8.6 8.6 0 0 1 9.8 3.4a8.6 8.6 0 1 0 10.8 10.8Z"/></svg>';
+  function currentScheme(){ return document.documentElement.dataset.scheme==='dark' ? 'dark' : 'light'; }
+  function applyScheme(s, save){
+    if(s==='dark') document.documentElement.dataset.scheme='dark';
+    else delete document.documentElement.dataset.scheme;
+    if(save){ try{ localStorage.setItem('hl-scheme', s); }catch(e){} }
+    document.querySelectorAll('.scheme-btn').forEach(b=>{ b.innerHTML = s==='dark' ? SUN : MOON; b.title = s==='dark' ? '切换到亮色' : '切换到暗色'; b.setAttribute('aria-label', b.title); });
+  }
+  function makeSchemeBtn(){
+    const b=document.createElement('button');
+    b.className='scheme-btn'; b.type='button';
+    b.addEventListener('click',()=>{
+      const next = currentScheme()==='dark' ? 'light' : 'dark';
+      applyScheme(next, true);
+      mermaidReady=false;                    // force re-init with the new palette
+      route();                               // re-render current page (mermaid redraws)
+    });
+    return b;
+  }
+  if(topbar && !topbar.querySelector('.scheme-btn')){
+    const btn=makeSchemeBtn();
+    // place before the GitHub link so icons sit together at the right end
+    const gh=topbar.querySelector('.gh-link');
+    gh ? topbar.insertBefore(btn, gh) : topbar.appendChild(btn);
+  }
+  const spineFoot=document.querySelector('.spine .foot');
+  if(spineFoot && !spineFoot.querySelector('.scheme-btn')) spineFoot.prepend(makeSchemeBtn());
+
+  /* initial scheme: saved pref, else system preference (page head already set it pre-CSS) */
+  let savedScheme=null; try{ savedScheme=localStorage.getItem('hl-scheme'); }catch(e){}
+  applyScheme(savedScheme || currentScheme(), false);
+
   /* ── GitHub icon in the topbar (links to this site's repo) ── */
   if(topbar && !topbar.querySelector('.gh-link')){
     const gh=document.createElement('a');

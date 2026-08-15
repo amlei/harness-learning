@@ -88,6 +88,33 @@
   --syn-keyword:#7c3aed; --syn-string:#15803d; --syn-number:#b45309; --syn-comment:#8691a1; --syn-fn:#1d4ed8;
 }
 
+/* ── dark mode: one scheme overlaid on ANY theme ──────────────────────────
+   data-scheme="dark" on <html> flips the canvas/text/code variables while the
+   theme keeps its brand accent + fonts. Specificity: :root[data-scheme] ties with
+   :root[data-theme], so this block must come AFTER every theme block. */
+:root[data-scheme="dark"]{
+  --ink:#14161b; --ink-2:#1a1d24; --ink-3:#22262f; --ink-deep:#10131a;
+  --rule:#323743; --rule-soft:#282c36;
+  --bone:#e6e4df; --bone-dim:#b7b3ab; --mute:#837f76; --mute-2:#5d5a53;
+  --code-fg:#e8c47f;             /* warm inline-code on dark pill */
+}
+:root[data-scheme="dark"][data-theme="atelier"],
+:root[data-scheme="dark"][data-theme="hermes"],
+:root[data-scheme="dark"][data-theme="eino"],
+:root[data-scheme="dark"][data-theme="dsh"]{
+  --code-bg:#171a20; --code-text:#e4e2dd;
+  --syn-keyword:#c792ea; --syn-string:#c3e88d; --syn-number:#f78c6c; --syn-comment:#6b7a72; --syn-fn:#82aaff;
+}
+/* light-code themes (atelier/hermes/eino/dsh) need hljs overrides flipped in dark;
+   periodical/technical/dark-fallback already carry dark code islands. */
+:root[data-scheme="dark"] .prose pre code{color:var(--code-text)}
+:root[data-scheme="dark"] .prose pre{border-color:var(--rule)}
+
+/* scheme toggle button (topbar + spine foot) */
+.scheme-btn{display:inline-flex;align-items:center;gap:5px;color:var(--bone-dim);cursor:pointer;background:none;border:none;padding:2px;line-height:0;font-family:inherit}
+.scheme-btn:hover{color:var(--accent)}
+.scheme-btn svg{width:15px;height:15px}
+
 body,.spine,.vol,.brand .cad,a,.shead,.topbar,.pcard,.pitem,.part-head,.hero,.outline{transition:background-color .45s ease,border-color .45s ease,color .45s ease}
 
 /* ── code-block palettes (theme-aware; overrides CDN hljs theme) ── */

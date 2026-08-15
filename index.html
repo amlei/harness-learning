@@ -3,6 +3,8 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
+<script>(function(){try{var s=localStorage.getItem('hl-scheme');if(!s)s=matchMedia('(prefers-color-scheme: dark)').matches?'dark':'light';if(s==='dark')document.documentElement.dataset.scheme='dark';}catch(e){}})();</script>
+
 <title>Harness Learning — a source-code atelier</title>
 <meta name="description" content="个人源码学习工坊：按开源仓库自身风格排印的源码实现剖析与文章整理。" />
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' fill='%23f6f1e6'/%3E%3Ctext x='16' y='24' font-size='22' text-anchor='middle' fill='%238a2e2e'%3E%E2%9D%A6%3C/text%3E%3C/svg%3E" />
@@ -129,6 +131,24 @@ const spine=document.getElementById('spine'),scrim=document.getElementById('scri
 document.getElementById('menuBtn').addEventListener('click',()=>spine.classList.add('open'));
 scrim.addEventListener('click',()=>{spine.classList.remove('open');scrim.classList.remove('show');});
 new MutationObserver(()=>scrim.classList.toggle('show',spine.classList.contains('open'))).observe(spine,{attributes:true,attributeFilter:['class']});
+
+/* dark/light scheme toggle (same markup/logic as reader.js) */
+const SUN='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.5v2.4M12 19.1v2.4M4.3 4.3l1.7 1.7M18 18l1.7 1.7M2.5 12h2.4M19.1 12h2.4M4.3 19.7 6 18M18 6l1.7-1.7"/></svg>';
+const MOON='<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20.6 14.2A8.6 8.6 0 0 1 9.8 3.4a8.6 8.6 0 1 0 10.8 10.8Z"/></svg>';
+function schemeApply(s){
+  if(s==='dark') document.documentElement.dataset.scheme='dark';
+  else delete document.documentElement.dataset.scheme;
+  try{ localStorage.setItem('hl-scheme', s); }catch(e){}
+  document.querySelectorAll('.scheme-btn').forEach(b=>{ b.innerHTML = s==='dark'?SUN:MOON; b.title = s==='dark'?'切换到亮色':'切换到暗色'; b.setAttribute('aria-label',b.title); });
+}
+function schemeBtn(){
+  const b=document.createElement('button'); b.className='scheme-btn'; b.type='button';
+  b.addEventListener('click',()=>schemeApply(document.documentElement.dataset.scheme==='dark'?'light':'dark'));
+  return b;
+}
+const rootSpineFoot=document.querySelector('.spine .foot');
+if(rootSpineFoot) rootSpineFoot.prepend(schemeBtn());
+schemeApply(document.documentElement.dataset.scheme==='dark'?'dark':'light');
 
 buildSpine();
 render();
